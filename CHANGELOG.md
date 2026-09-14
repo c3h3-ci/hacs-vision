@@ -1,0 +1,427 @@
+# Changelog
+
+## v7.0.1 (2026-09-14) — 服务令牌签发修复 / Service Token Issuance Fix
+
+### 🔧 修复 / Fixed
+
+- **`replace_entity_refs` 服务写回静默失败 ([#55](https://github.com/C3H3-AI/hacs-vision/pull/55))** — 调用服务返回成功，但配置从未写入。原因：签发临时访问令牌时把 `User` 对象直接传给 `hass.auth.async_create_access_token()`，并附加了不存在的 `client_name` / `expires` 关键字参数，触发 `TypeError` 使令牌恒为 `None`，仅在日志中以 WARNING 记录。访问令牌不能直接签发，须先从 refresh token 派生（`async_create_refresh_token(...)` → `async_create_access_token(refresh_token)`），其中 `client_id` 为 NORMAL 类型令牌的必填项
+- **`replace_entity_refs` silently failed to write config back ([#55](https://github.com/C3H3-AI/hacs-vision/pull/55))** — The service reported success while the config was never written: the temporary access token was requested by passing a `User` object to `hass.auth.async_create_access_token()` along with non-existent `client_name` / `expires` keyword arguments, raising `TypeError` and leaving the token `None` (logged as a warning only). Access tokens must be derived from a refresh token (`async_create_refresh_token(...)` → `async_create_access_token(refresh_token)`), with `client_id` required for NORMAL-type tokens
+
+### ⚙️ 内部改进 / Internal
+
+- **OAuth `client_id` 解析失败时回退而非崩溃 ([#53](https://github.com/C3H3-AI/hacs-vision/pull/53))** — HACS 未安装时不再抛 `ImportError`，改为返回明确的错误响应
+- **HACS 仓库注册结果核验 ([#52](https://github.com/C3H3-AI/hacs-vision/pull/52))** — 注册后校验仓库确已进入 HACS 内存，避免静默跳过后续操作找不到仓库
+- **数据层加固 ([#51](https://github.com/C3H3-AI/hacs-vision/pull/51))** — 存储键锁改为有界 `OrderedDict`；自动更新调度任务销毁时取消，避免悬空任务
+- **服务注册运行时无关化 ([#49](https://github.com/C3H3-AI/hacs-vision/pull/49))** — 服务处理器按配置项解析运行时容器；实体引用替换改为整词匹配，避免 `light.kitchen` 误伤 `light.kitchen_table`
+- **移除多余 i18n `options` 块 ([#50](https://github.com/C3H3-AI/hacs-vision/pull/50))** — 清理无对应 OptionsFlow 的翻译键
+
+## v7.0.0 (2026-09-14) — 最低 HA 版本提升至 2026.1.0 / Minimum HA raised to 2026.1.0
+
+> ⚠️ **破坏性变更 / BREAKING CHANGE** — 最低 Home Assistant 版本由 `2024.1.0` 提升至 **`2026.1.0`**。
+> 运行 HA 2024.1 ~ 2025.12 的用户**无法**使用本版本，请先升级 Home Assistant。
+>
+> **BREAKING:** The minimum supported Home Assistant version is raised from `2024.1.0` to **`2026.1.0`**.
+> Users on HA 2024.1 – 2025.12 cannot run this release — upgrade Home Assistant first.
+
+### ⚠️ 破坏性变更 / Breaking
+
+- **最低 HA 版本提升至 2026.1.0** — 由 `hacs.json` 的 `homeassistant: 2026.1.0` 声明，HACS 会对低版本用户拦截安装（Home Assistant 的 `manifest.json` 不支持该字段，最低版本只能由 `hacs.json` 声明）
+- **剔除旧版 API 与兼容分支 ([#41](https://github.com/C3H3-AI/hacs-vision/pull/41))** — 移除针对旧版 HA 的探测与回退分支，统一走现行 API：
+  - 配置项变更改订阅 `SIGNAL_CONFIG_ENTRY_CHANGED`，替代不存在的 `config_entry_updated` / `config_entry_removed` 总线事件（此前缓存重建永不触发）
+  - `hass.http.get_url()` → `helpers.network.get_url`；`hass.data["system_log"]` → `LogErrorHandler.records.to_list()`
+  - 设备注册表改用 `dr.async_entries_for_config_entry`，替代 2026.9 起弃用的容器视图
+  - 蓝图与场景改走 `async_get_blueprints(hass)` 等公开 API；配置写入统一走 `POST /api/config/{domain}/config/{key}`
+  - 共 8 个文件，`+284 -358`（净删 74 行）
+- **Minimum HA raised to 2026.1.0** — declared through `hacs.json` (`homeassistant: 2026.1.0`); HACS blocks older installs (Home Assistant's `manifest.json` has no such field — the minimum can only be declared in `hacs.json`)
+- **Legacy API and compatibility branches removed ([#41](https://github.com/C3H3-AI/hacs-vision/pull/41))** — all old-version probing and fallbacks are gone; the integration now targets current APIs only
+
+### 🔧 修复 / Fixed
+
+- **任意分支 / commit 安装完全失效 ([#43](https://github.com/C3H3-AI/hacs-vision/pull/43))** — 版本选择器「Commit / 分支」页签选择任意分支或 commit 安装时必然失败，报 `No content to download`。根因是刷新仓库 tree 的调用早于 HACS 赋值 `self.ref`，缓存到的是**上一个 ref** 的 tree；随后 HACS 的 `update_filenames()` 又优先采用最新 release 的资源文件，把 `content.path.remote` 钉成 `"release"`，导致以分支名调用 `release_contents()` 匹配不到任何 release、文件收集为空
+- **修复方式** — 把 tree 刷新移入 `download_content` 钩子（此时 `self.ref` 已是请求的 ref），刷新后清空 `releases.objects` 让 HACS 依据该 ref 的 tree 重新推导 `file_name` / `content.path.remote`；`data.name` 为空时回退为仓库 slug（否则会拼出 `"None.js"` 匹配不到文件）；安装结束完整还原 `releases.objects` / `selected_tag` / `force_branch` / `download_content`
+- **Arbitrary branch/commit install was completely broken ([#43](https://github.com/C3H3-AI/hacs-vision/pull/43))** — Installing any branch or commit from the version selector's "Commit / Branch" tab always failed with `No content to download`. The repository tree was refreshed before HACS assigned `self.ref`, so it cached the *previous* ref's tree; HACS' `update_filenames()` then preferred the latest release asset and pinned `content.path.remote` to `"release"`, making `release_contents(<branch>)` match no release and file gathering return empty
+- **Fix** — The tree refresh now runs inside a `download_content` hook (when `self.ref` is already the requested ref), releases are hidden afterwards so HACS re-derives `file_name` / `content.path.remote` from that ref's tree, `data.name` falls back to the repository slug (a missing name builds `"None.js"`, matching nothing), and `releases.objects` / `selected_tag` / `force_branch` / `download_content` are restored once the install finishes
+
+### 📌 升级须知 / Upgrade notes
+
+- HA < 2026.1.0：**请勿升级**本集成，保持在 v6.8.0；或先将 Home Assistant 升级至 2026.1.0 及以上
+- HA ≥ 2026.1.0：正常升级即可，无需手动迁移配置
+- HA < 2026.1.0: **do not upgrade** this integration — stay on v6.8.0, or upgrade Home Assistant first
+- HA ≥ 2026.1.0: upgrade normally; no manual migration required
+
+## v6.8.0 (2026-09-13) — 重构与服务治理 / Refactor & Service Governance
+
+**Recommended.** Minimum Home Assistant version: 2026.1.0.
+
+本版本将 `v6.7.0` 之后合并到 main 的 8 个 PR（#30–#37）统一发布，主要是内部治理与稳定性改进。
+
+### 重构 / Refactor
+
+- **运行期状态迁入 `entry.runtime_data`**：新增 `runtime.py`（`VisionRuntime` 容器统一持有 operator / shared_data / backup / checker / api_view / auto_update / listeners / bg_tasks），卸载逻辑集中到 `runtime.shutdown()`，同时修复重载时视图未反注册的崩溃
+- **服务独立模块**：服务定义抽出到 `services.py`，改在 `async_setup` 中注册，卸载清理更完整
+- **15 个模块整理**：散落的 `import` 统一上提、删除无引用死代码、docstring/注释统一为中文
+
+### 修复 / Fixes
+
+- **面板幂等注册**：10 处 `customElements.define` 改为幂等，避免 `?v` 变化触发模块二次求值中断导致页面滞留旧实现
+- **删除按钮渲染 `false`**：移除 `integrations-list` 上重复的 `title` 属性，修复集成管理页按钮错位并渲染出字面量 `false`
+- **消除 `Removing unknown panel` 误告警**：`async_remove_panel` 补 `warn_if_unknown=False`
+- **manifest 依赖声明**：声明 `http` 依赖与 `blueprint/frontend/lovelace` 后置依赖，修复 hassfest 校验；版本对齐 `const.py`
+
+### CI / 工程
+
+- 新增 hassfest 与 HACS Action 校验工作流，替换旧的 `validate.yml`
+- `const.py` 与 `manifest.json` 版本统一为 `6.8.0`
+
+### English summary
+
+This release bundles the 8 PRs merged after v6.7.0 (#30–#37), focused on internal governance and stability: runtime state moved into `entry.runtime_data` with a `VisionRuntime` container and centralized `runtime.shutdown()`, services extracted to a dedicated `services.py`, idempotent `customElements.define` registration, a fix for the delete button rendering literal `false`, suppressed `Removing unknown panel` warnings, declared manifest dependencies to fix hassfest validation, and a new hassfest/HACS CI workflow.
+
+---
+
+## v6.7.0 (2026-09-11) — 稳定版 / Stable Release
+
+从 beta1 到 beta5 的全部改动 + 2 个 hotfix（sync-favorites UnboundLocalError、custom brand 404→204）。
+
+**Recommended.** Minimum Home Assistant version: 2024.1.0.
+
+### 🚀 亮点 / Highlights
+
+- 任意 commit / 分支安装
+- Version badges on refs、repo 分组、auto-focus
+- 全面审计：安全、数据丢失、竞态、反馈
+- Storage locking、event-loop 卫生、泄漏修复
+- Star→Favorites sync 过滤不可安装 repo
+- GitHub API 分页上限（50 页）
+
+### 🐛 Beta5 之后补的修复 / Post-beta5 hotfixes
+
+- **sync-favorites UnboundLocalError** — audit round 2 把 `new_favs` 缩进进了 `if added or removed:` 块，但 return 还在外层引用。当收藏夹已同步（无变化）时触发 500
+- **HACSBrandIconView 404 → 204** — HA 原生集成没有 `custom_components/<domain>/brand/` 目录，每次请求都 404。改为返回 204，前端静默 fallback 到官方 brands CDN
+
+### English summary
+
+From beta1 through beta5 + 2 hotfixes (sync-favorites UnboundLocalError, custom brand 404→204). Feature highlights: arbitrary commit/branch install, version badges & grouping, full audit pass (security, data loss, races, feedback), storage locking, event-loop hygiene, bounded install locks, GitHub pagination caps, Star→Favorites sync filters non-installable repos.
+
+---
+
+## v6.7.0-beta5 (2026-09-11) — 第二轮审计：数据完整性 / Audit Round 2: Data Integrity
+
+> ⚠️ **预发布版本（Beta）** — 基于 v6.7.0-beta4。请通过 HACS 的「显示 Beta 版本」或 GitHub Releases 安装测试。
+> **Pre-release (Beta)** — Built on v6.7.0-beta4. Install via HACS "Show beta versions" or GitHub Releases for testing.
+
+### 🛠 修复 / Fixed
+
+- **存储读写竞态** — 新增按 key 的 asyncio 锁与事务式读写：并发的收藏/设置"读-改-写"不再互相覆盖；更新历史文件改为原子写入并加锁
+- **事件循环阻塞** — 依赖检查的包导入（cv2/pandas 等重型库）、HA 错误日志读取、截图写入移入线程池，不再卡住整个 Home Assistant
+- **内存泄漏** — 安装锁与进度字典有界化（此前无限增长）；HACS 未就绪时的空索引不再被永久缓存
+- **配置流代理容错** — 上游返回 HTML 错误页不再抛异常，透传真实状态码与错误信息
+- **健壮性** — GitHub 分页遍历加上限；后台任务持引用防 GC；`auto_update_interval` 数值校验（坏值曾导致自动更新调度崩溃）；备份时间戳统一 UTC；静态文件路径检查加固
+- **前端** — 统计加载失败保留旧值（此前瞬时错误让头部统计清零）；卡片预览消息源校验；分页越界自动回正；"有更新"判定统一；多节点集成删除提示明确；监听器断开清理；移除 5 处死代码
+
+### English summary
+
+- Per-key storage locks — concurrent favorites/settings read-modify-write no longer loses updates; atomic history writes
+- Event loop: dependency imports, log reads and screenshot writes moved off the loop
+- Bounded install-lock/progress dictionaries; empty HACS index not cached
+- Config-flow proxy tolerates non-JSON upstream errors; pagination caps; task references held; interval validation; UTC timestamps
+- Frontend: keep last-good stats on failure, preview message-source check, page clamp, unified update detection, multi-entry delete hint, listener cleanup, dead code removed
+
+
+## v6.7.0-beta4 (2026-09-11) — 全面审计与体验修复 / Full Audit & UX Fixes
+
+> ⚠️ **预发布版本（Beta）** — 基于 v6.7.0-beta3，本轮为全面代码审计修复。请通过 HACS 的「显示 Beta 版本」或 GitHub Releases 安装测试。
+> **Pre-release (Beta)** — Built on v6.7.0-beta3, a full code-audit fix round. Install via HACS "Show beta versions" or GitHub Releases for testing.
+
+### 🛠 修复 / Fixed
+
+- **自定义仓库误标** — HACS 未加载某分类默认目录时，全部默认仓库被误判为"自定义仓库"（显示 775 个）；现在仅当分类覆盖可信时才启用推断
+- **配置流 multi_select 提交字符串** — 同名复选框组提交为字符串导致 HA 400 校验失败，现正确收集为数组；错误响应体不再丢弃，字段级错误直接显示在表单中
+- **设置页全面修复** — 移除未经同意的自动点赞行为；三个"假设置"（无任何消费逻辑）已删除；"默认视图"设置真正生效；OAuth 轮询可取消、有超时；设置保存串行化防丢失
+- **星标/收藏同步过滤** — Star→收藏 与 星标→自定义仓库 同步现在只保留 HACS 可安装的仓库；分类检测不再把未知仓库兜底为 integration；已在 HACS 中的仓库不再重复添加
+- **收藏筛选** — 标签筛选改为单选互斥（此前组合标签会静默丢失筛选条件，列出全部仓库）
+- **商店/更新页反馈** — 安装/更新按钮执行期禁用防重复点击；加载失败保留旧列表并提示；收藏/星标失败回滚；README 不再串台；移除 5 分钟强制关闭对话框
+- **API 安全与正确性** — 全部数据端点要求管理员权限；配置更新改为合并（此前整包替换会抹掉其他配置）；`repos/status` 路由修复；品牌图标 `/icon` `/logo` 子路由修复；实体引用替换后恢复自动化原状态；出站请求统一超时
+
+### English summary
+
+- **Custom-repo mislabeling fixed** — default repos are no longer flagged "custom" when HACS hasn't loaded a category's default set
+- **Config-flow multi_select** — checkbox groups now submit arrays (HA 400 "Not a list" fixed); field-level errors surface in the form
+- **Settings page** — hidden auto-star removed; dead settings removed; default-view setting implemented; OAuth poll cancellable; serialized saves
+- **Star/favorite sync** — only HACS-installable repos pass; junk detection fallback removed; already-registered repos skipped
+- **Favorites filter** — tag chips are single-select (combined tags silently dropped the filter)
+- **Store/updates feedback** — busy states on actions, stale-response races fixed, load failures surfaced
+- **API** — admin required; config updates merge instead of replace; route fixes; automation state restored after entity replacement; outbound timeouts
+
+
+## v6.7.0-beta3 (2026-09-10) — 版本标注与分组 / Version Badges & Grouping
+
+> ⚠️ **预发布版本（Beta）** — 基于 v6.7.0-beta2，改进「Commit / 分支」页签的体验。请通过 HACS 的「显示 Beta 版本」或 GitHub Releases 安装测试。
+> **Pre-release (Beta)** — Built on v6.7.0-beta2, improves the "Commit / Branch" tab experience. Install via HACS "Show beta versions" or GitHub Releases for testing.
+
+### ✨ 改进 / Improved
+
+- **分支/commit 列表按类型分组** — 先展示分支区（大写标题），再展示提交区，不再混排
+- **版本号自动关联** — 后端调用 `/releases` API，通过 `target_commitish` 交叉匹配分支/commit 对应的发布版本号；匹配到的项显示蓝色版本徽章（如 `v2.0.0`），无版本号的不标
+- **默认分支标记** — 默认分支（`main` / `master`）右侧显示绿色"默认"徽章
+- **自动聚焦输入框** — 切到「Commit / 分支」页签后，输入框自动获得焦点，可直接开始输入
+- **安装后刷新** — 安装任意 ref 后自动重新加载列表，更新版本标记
+- **统一安装锁** — `_installing` 共享锁，安装中所有安装按钮（稳定版/预发布版/ref）同时禁用，避免并发
+- **列表高度** — 从 220px 提高到 280px，可展示更多项
+- **俄语本地化** — 补全 `refTab`、`refBranch`、`refCommit` 等 8 条 ru 翻译
+- **Branch/Commit list grouped** — branches and commits displayed in separate sections with headers
+- **Version auto-association** — backend fetches `/releases` and cross-references `target_commitish` to attach version badges; items with matching versions get a blue badge, others are unlabeled
+- **Default branch marker** — the default branch shows a green "Default" badge
+- **Auto-focus input** — the ref input field auto-focuses when switching to the "Commit / Branch" tab
+- **Post-install refresh** — ref list auto-refreshes after install to update version markers
+- **Unified install lock** — shared `_installing` lock disables all install buttons during any installation
+- **Increased list height** — 220px → 280px for more visible items
+- **Russian i18n** — added 8 translation keys for the ref tab
+
+## v6.7.0-beta2 (2026-09-09) — 任意 commit / 分支安装 / Arbitrary Commit & Branch Install
+
+> ⚠️ **预发布版本（Beta）** — 基于 v6.7.0-beta1，新增「任意 commit / 分支安装」功能。请通过 HACS 的「显示 Beta 版本」或 GitHub Releases 安装测试。
+> **Pre-release (Beta)** — Built on v6.7.0-beta1, adds arbitrary commit/branch install. Install via HACS "Show beta versions" or GitHub Releases for testing.
+
+### ✨ 新功能 / Added
+
+- **版本选择器新增「Commit / 分支」页签** — 在原有的「正式版」「预发布版」之后增加第三个页签，支持安装任意 git ref
+  - 自动列出仓库分支（GitHub `/branches`）与最近 15 条提交（`/commits`），每条带「分支 / 提交」徽章，点击即装
+  - 支持手动输入分支名或 commit SHA 安装（如 `dev`、`a1b2c3d`），回车或点「安装」
+  - 面板内橙色提示：任意 ref 安装属于开发用途，可能不稳定且不会收到更新提醒
+- **Version selector gains a "Commit / Branch" tab** — a third tab after Stable / Pre-releases for installing any git ref
+  - Lists repository branches (GitHub `/branches`) and the 15 most recent commits (`/commits`), each installable with one click
+  - Manual entry of a branch name or commit SHA (e.g. `dev`, `a1b2c3d`)
+  - In-panel warning that arbitrary-ref installs are for development, may be unstable, and receive no update notifications
+
+### 🔧 后端 / Backend
+
+- **支持任意 ref 安装** — `install_repository_version()` 自动判定目标是已知 release tag 还是任意 ref；非 release 时临时固定 `repo.ref` 让 HACS 下载该分支/commit，并在 `finally` 中**必定还原**，避免污染后续安装
+- **Arbitrary ref support** — `install_repository_version()` detects whether the target is a known release tag; for non-release refs it temporarily pins `repo.ref` so HACS downloads that branch/commit, and always restores it in a `finally` block
+- 新增 `_is_release_version()` 判定（兼容 v 前缀、对象式 releases）与 `get_repo_refs()` 分支/提交拉取
+- 新增 API：`GET repos/refs`（列出分支与提交）、`POST repos/install_ref`（安装指定 ref）
+- New API endpoints: `GET repos/refs`, `POST repos/install_ref`
+
+### 🧪 测试 / Tests
+
+- 新增 9 条单测覆盖 release tag 判定与 ref 安装的固定/还原行为
+- 9 new unit tests covering release-tag detection and ref pinning/restoration
+
+## v6.7.0-beta1 (2026-09-09) — 侧边栏逃逸通道修复（Beta）/ Sidebar Escape Hatch (Beta) (#29)
+
+> ⚠️ **预发布版本（Beta）** — 请通过 HACS 的「显示 Beta 版本」或 GitHub Releases 安装测试。功能与 v6.6.2 相同，仅版本命名不同。
+> **Pre-release (Beta)** — Install via HACS "Show beta versions" or GitHub Releases for testing. Same content as v6.6.2, different version naming only.
+
+### 🔧 修复 / Fixed
+
+- **侧边栏隐藏后无法离开面板 ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
+- **修复了 768–870px 窗口宽度的盲区** — 此区间 HA 已把侧边栏变为抽屉，但面板此前不显示菜单按钮（面板旧阈值 768px 与 HA 的 870px 不一致）
+- **No escape from panel when sidebar hidden ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
+- **Fixed the 768–870px blind spot** — HA already turns the sidebar into a drawer in this range, but the panel's menu button did not show (old panel threshold 768px vs HA's 870px)
+
+### ⌨️ 改进 / Improved
+
+- **Escape 统一逃逸链** — Escape 现在能可靠关闭所有弹窗（Issue 提交 → 确认框 → 配置流 → 卡片预览 → 条目选择 → 仓库详情，按层级每次关一层）；集成管理视图的三个弹窗新增 window 级 Escape 监听，焦点不在弹窗内也能关闭
+- **Unified Escape chain** — Escape now reliably closes every modal (issue dialog → confirm → config flow → card preview → entry selector → repo detail, top-most first); the integrations view dialogs gained window-level Escape handling that works even when focus is outside the overlay
+
+### 🧹 清理 / Cleanup
+
+- **移除 v5.0 废弃的 iframe 测试弹窗死代码**（`_renderTestIframe`，自 v5.0 起无任何调用点）
+- **Removed dead iframe test dialog code** (`_renderTestIframe`, unreferenced since v5.0)
+
+## v6.6.2 (2026-09-09) — 侧边栏逃逸通道修复 / Sidebar Escape Hatch (#29)
+
+### 🔧 修复 / Fixed
+
+- **侧边栏隐藏后无法离开面板 ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
+- **修复了 768–870px 窗口宽度的盲区** — 此区间 HA 已把侧边栏变为抽屉，但面板此前不显示菜单按钮（面板旧阈值 768px 与 HA 的 870px 不一致）
+- **No escape from panel when sidebar hidden ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
+- **Fixed the 768–870px blind spot** — HA already turns the sidebar into a drawer in this range, but the panel's menu button did not show (old panel threshold 768px vs HA's 870px)
+
+### ⌨️ 改进 / Improved
+
+- **Escape 统一逃逸链** — Escape 现在能可靠关闭所有弹窗（Issue 提交 → 确认框 → 配置流 → 卡片预览 → 条目选择 → 仓库详情，按层级每次关一层）；集成管理视图的三个弹窗新增 window 级 Escape 监听，焦点不在弹窗内也能关闭
+- **Unified Escape chain** — Escape now reliably closes every modal (issue dialog → confirm → config flow → card preview → entry selector → repo detail, top-most first); the integrations view dialogs gained window-level Escape handling that works even when focus is outside the overlay
+
+### 🧹 清理 / Cleanup
+
+- **移除 v5.0 废弃的 iframe 测试弹窗死代码**（`_renderTestIframe`，自 v5.0 起无任何调用点）
+- **Removed dead iframe test dialog code** (`_renderTestIframe`, unreferenced since v5.0)
+
+## v6.6.1 (2026-09-02) — 俄语翻译修复 / Russian Changelog Translations
+
+- 修复俄语更新日志缺失的翻译条目（仅文档，manifest 版本号未随之更新，于 v6.6.2 补齐）
+- Fixed missing Russian changelog translations (docs-only; manifest version was left at 6.6.0 and corrected in v6.6.2)
+
+## v6.6.0 (2026-08-20) — 俄语本地化 / Russian Localization
+
+### 🌐 国际化 / Internationalization
+
+- **新增俄语完整本地化支持** — 添加 `ru` 语言到语言选择器，自动检测 `ru`, `ru-RU`, `ru-BY`, `ru-KZ`, `ru-KG` 区域设置
+- **俄语翻译全覆盖** — 625/625 前端 i18n 翻译键 + 26/26 HA 配置流翻译键，感谢 @BrainDeLook 的贡献
+- **新增俄语 README** — 完整的俄语文档，包含安装、配置、使用说明和更新日志
+- **响应式布局修复** — 语言选择和设置区域改用响应式网格布局，解决长翻译标签溢出问题
+- **语言选择器修复** — 修复页面重载后语言选择器显示错误的问题，动态语言选项现在会正确选择有效语言
+
+### PR [#27](https://github.com/C3H3-AI/hacs-vision/pull/27)
+
+## v6.5.5 (2026-08-02) — XSS 安全修复 / XSS Security Fix
+
+### 🛡️ 安全 (Security)
+
+- **修复 README XSS 漏洞 (V-003, HIGH)** — 后端获取 GitHub 渲染的 README HTML 后经过 DOMPurify 消毒再返回前端，防止恶意仓库作者注入脚本。感谢 @anupamme 的贡献
+- **Fixed README XSS vulnerability (V-003, HIGH)** — Backend now sanitizes GitHub's rendered README HTML via DOMPurify before returning to the frontend, preventing malicious repository authors from injecting scripts. Thanks to @anupamme for the contribution
+
+## v6.4.3 (2026-07-16) — 服务补全 & 可移植性优化
+
+### ✨ 改进
+
+- **auto_update 服务定义补全** — 补全 `auto_update_start` / `auto_update_stop` / `auto_update_trigger` / `auto_update_reload_settings` 四个服务，开发者工具中现可看到名称与描述
+- **截图地址生成优化** — 截图 URL 兜底逻辑改为按 HA 配置的 external/internal URL 动态派生基地址，提升跨环境可移植性
+- **降低 HACS 内部耦合** — 部分内部调用由 `self._hacs.hass` 改为 `self.hass`，减少私有 API 依赖
+
+### 🧹 清理
+
+- **移除未使用的 Gitee 模块** — 删除从未被引用的 `api_mixins/gitee.py`，精简代码体积
+- **清理冗余翻译** — 移除 `zh-Hans.json` 中无对应 OptionsFlow 的 `options` 段
+
+## v6.4.1 (2026-07-06) — 兼容修复 & 安全增强
+
+### 🔧 修复
+
+- **自定义仓库识别修复** — 改用 `is_default()` 判断自定义仓库，兼容 HACS 2.0 移除 `custom_repositories` 字段
+- **集成管理视图不显示** — 配置条目缓存强制刷新（`force_refresh=True`），新添加的集成立即可见
+- **同步选中仓库报 500** — 兼容字符串和对象两种数据格式，前后端统一处理
+- **仓库同步后找不到** — 简化 `_ensure_custom_repos_registered`，依赖 HACS 自身注册机制
+
+### 🛡️ 安全
+
+- **API 安全增强** — 配置和设置白名单过滤、参数校验、语言参数防路径遍历
+- **OAuth 不再返回 token** — 消除 token 泄露风险
+
+## v6.4.0 (2026-07-06)
+
+### ✨ 新功能
+
+- **搜索+添加仓库合一** — 商店和仓库管理视图的搜索框直接支持添加仓库：输入 `owner/repo` 或 GitHub URL 自动显示内联添加栏，输入组织名自动加载仓库列表供批量勾选添加。移除独立的「+ 添加仓库」按钮和表单
+- **搜索能力增强** — 所有视图搜索统一支持 GitHub URL 解析、作者名搜索、组织名搜索
+- **详情弹窗仓库名可点击** — 详情弹窗中的仓库名（如 `C3H3-AI/hacs-vision`）变为可点击链接，直接跳转到 GitHub 仓库页面
+- **提示词更新** — 搜索框占位提示改为「搜索或添加仓库...」，一目了然
+
+### 🔧 修复
+
+- **自定义仓库注册失败** — `add_custom_repository` 使用 `check=False` 避免 GitHub API 限流/网络波动导致仓库注册失败（[hacs_operator.py#L829](https://github.com/C3H3-AI/hacs-vision/blob/main/custom_components/hacs_vision/hacs_operator.py#L829)）
+
+## v6.3.0 (2026-07-05)
+
+### ✨ 新功能
+
+- **更新历史记录系统 (HACSHubHistory)** — 新增后端历史记录管理器，自动记录每次仓库更新的版本变更（from→to），保留30天自动清理，通过 `GET /api/hacs_vision/history` 查询
+- **安装进度条** — 后端新增安装进度追踪机制，更新时前端卡片展示实时百分比进度条，覆盖单仓库更新和全部更新场景
+- **更新页面区段重构** — 页面拆分为「可更新」「已更新」「已略过」三个可折叠区段，默认展开可更新区段，结构更清晰
+- **批量操作栏** — 更新页面新增底部批操作栏，支持批量更新和批量移除，一键操作多个仓库
+- **更新历史卡片** — 已更新区段以卡片列表展示，包含仓库头像、名称、版本变化、相对时间（刚刚/n分钟前/n小时前/n天前）
+
+### 🔧 修复
+
+- **更新进度状态丢失** — `install_version` 和 `async_install` 后正确设置完成状态并清理临时进度记录
+
+### 📦 配置
+
+- 新增 storage 路径：`.storage/hacs_vision_update_history.json`
+
+### 🌐 翻译
+
+- 新增 13 个翻译 key（zh/en/de），覆盖区段标题、历史记录和时间显示
+
+## v6.2.1 (2026-07-04)
+
+### ✨ 新功能
+
+- **预约重启** — 设置面板新增时间选择器，自动更新安装完成后在指定时间（如凌晨 3 点）重启 HA 使更新生效，不留空则不重启
+- **白名单弹窗分页** — 设置面板白名单改为按钮 + 模态弹窗方式，弹窗内分页展示候选仓库（15条/页），搜索、chips、全选/取消全选、保存/取消
+- **HACS 数据刷新** — 自动更新周期开始前先刷新 HACS 仓库数据，确保获取最新版本信息，不再漏更新
+
+### 🔧 修复
+
+- **设置被覆盖** — `_update_settings` 改为合并保存 `{**existing, **body}`，避免 browse/updates 页面只传 `auto_update_repos` 时丢弃 `hide_hacs_panel` 等其他设置
+- **前端缓存加载保护** — 设置页面加载时添加 `_installedLoaded` 标志，防止无限加载
+
+## v6.2.0 (2026-07-04)
+
+### ✨ 新功能
+
+- **自动更新调度引擎 (AutoUpdateManager)** — 新增后端自动更新模块，支持定时检查并自动更新 HACS 仓库
+  - 白名单机制：仅更新用户明确选中的仓库
+  - 非重叠运行：前后周期自动跳过，避免冲突
+  - 持久通知：每次更新结果通过 HA 通知送达，固定 ID 防止堆积
+  - 最小间隔保护：限制最短 10 分钟，防止 API 滥用
+  - 4 个 HA 服务：`auto_update_start` / `auto_update_stop` / `auto_update_trigger` / `auto_update_reload_settings`
+  - 启动初始延迟 60s，避免 HA 启动时爆发请求
+  - 新增 `_coalescing` 标志，消除 trigger() 与 coalesced task 的竞态条件
+- **前端设置面板** — 设置页面新增「自动更新」配置区域
+  - 开关：启用/禁用自动更新
+  - 间隔选择：1h / 3h / 6h / 12h / 24h
+  - 通知开关：控制是否发送 HA 通知
+  - 白名单管理：搜索过滤 + 复选框勾选已安装仓库（支持全选/取消全选）
+  - 操作按钮：立即检查和重载设置
+  - 状态指示：实时显示调度状态（运行中/已调度/未运行），通过 HA event bus 与后端同步
+- **商店仓库卡片** — 浏览商店时，已安装仓库的底部操作栏新增自动更新开关按钮
+  - 乐观更新：点击即切换，API 失败自动回滚
+  - 绿色高亮表示已开启，灰色表示关闭
+- **更新页面** — 更新页面仓库卡片和列表视图均新增自动更新开关按钮，覆盖正常状态和待重启状态
+- **HA event bus 状态同步** — 后端 `_dispatch_state()` 同时触发 `async_dispatcher_send` 和 `hass.bus.async_fire`，前端 config-view 通过 `subscribeEvents` 实时监听调度状态
+
+### 🔧 修复
+
+- **`_running` 永不重置** — `get_settings()` 移入 `try` 块，确保任何异常都能正确重置 `_running = False`
+- **通知堆积** — 固定 `notification_id = "hacs_vision_auto_update"`，新通知自动覆盖旧通知，不会重复创建
+- **`_cancel_interval` 兼容性** — 增加 `hasattr(x, 'cancel')` 检查，同时支持 `TimerHandle` 和 callable 两种类型
+- **`trigger()` 排队反馈** — 返回 `{"queued": true}` 标志，前端显示排队提示而非错误
+- **`_onAutoUpdateRepos` 死代码清理** — 删除 config-view 中废弃的 textarea 白名单编辑方法
+
+### 📦 配置
+
+- 新增 settings 字段：`auto_update_enabled`（默认关闭）、`auto_update_repos`（白名单列表）、`auto_update_interval`（默认 6 小时）、`auto_update_notify`（默认开启）
+
+### 🌐 翻译
+
+- 新增 29 个翻译 key（zh/en/de），覆盖自动更新 UI 全字段
+
+## v6.1.0 (2026-07-02)
+
+### 🔧 修复
+
+- **register_static_path 兼容性** — 完全移除了该冗余调用，sidebar-badge.js 通过已有的 HACSEnhancedStaticView 提供服务，兼容无 register_static_path 方法的旧版 HA
+- **pending_restart 兼容性** — 某些 HACS 版本的 RepositoryData 没有 pending_restart 属性，改用 getattr() 安全取值
+
+### ♻️ 重构
+
+- **Phase 3：api.py 架构拆分** — 2001 → 349 行，按职责拆分为 3 个 Mixin（GitHubAuthMixin、GitHubActionsMixin、HACSOpsMixin）
+
+## v6.0.1 (2026-07-02)
+
+### 🔧 修复
+
+- **Sidebar badge 认证问题** — 从 HTTP fetch 迁移到 HA WebSocket 获取更新数，彻底消除无认证请求导致的 Login attempt 警告日志
+- **XSS 安全漏洞** — 对用户输入内容进行 DOMPurify 消毒，防止跨站脚本攻击
+- **错误信息消毒** — 错误消息中的用户敏感信息（token、路径等）做脱敏处理
+
+### ♻️ 重构
+
+- 提取共享 CSS 样式，减少代码重复
+- 优化 Config Flow 对话框逻辑
+
+### 📦 其他
+
+- 添加 WebSocket handler `hacs_vision/updates`（后端注册，前端 sidebar-badge 和 panel 共享）
+- 更新 README 和 hacs.json 配置
+
+## v6.0.0 (2026-06-23)
+
+- 初始发布
+- HACS 增强管理面板
+- GitHub OAuth 认证
+- 批量更新/安装/移除
+- 配置流集成支持
+- 实体引用查找和替换

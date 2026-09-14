@@ -1,0 +1,45 @@
+install_repository:
+  fields:
+    repository:
+      required: true
+      example: "custom-components/sensor"
+      selector:
+        text:
+    category:
+      required: false
+      default: "integration"
+      selector:
+        select:
+          options:
+            - "integration"
+            - "plugin"
+            - "theme"
+            - "appdaemon"
+            - "python_script"
+            - "netdaemon"
+
+find_entity_refs:
+  fields:
+    entity_id:
+      required: true
+      example: "sensor.temperature"
+      selector:
+        text:
+
+replace_entity_refs:
+  fields:
+    old_id:
+      required: true
+      example: "sensor.old_temperature"
+      selector:
+        text:
+    new_id:
+      required: true
+      example: "sensor.new_temperature"
+      selector:
+        text:
+    preview:
+      required: false
+      default: true
+      selector:
+        boolean:

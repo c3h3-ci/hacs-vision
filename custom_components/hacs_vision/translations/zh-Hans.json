@@ -1,0 +1,78 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HACS Vision",
+        "description": "设置 HACS 增强面板。请确保 HACS 已安装。"
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "HACS Vision 只允许配置一个实例。",
+      "hacs_not_found": "需要 HACS 集成但未找到。"
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "刷新",
+      "description": "强制刷新 HACS 仓库数据。"
+    },
+    "install_repository": {
+      "name": "安装仓库",
+      "description": "从 HACS 安装一个仓库。",
+      "fields": {
+        "repository": {
+          "name": "仓库",
+          "description": "仓库全名（作者/仓库名）。"
+        },
+        "category": {
+          "name": "分类",
+          "description": "仓库分类。"
+        }
+      }
+    },
+    "find_entity_refs": {
+      "name": "查找实体引用",
+      "description": "查找 HA 中所有引用指定 entity_id 的位置（自动化、脚本、场景、仪表盘、蓝图）。",
+      "fields": {
+        "entity_id": {
+          "name": "实体 ID",
+          "description": "要查找的实体标识符（如 sensor.temperature）。"
+        }
+      }
+    },
+    "replace_entity_refs": {
+      "name": "替换实体引用",
+      "description": "替换 HA 中所有对旧 entity_id 的引用为新 entity_id。",
+      "fields": {
+        "old_id": {
+          "name": "旧实体 ID",
+          "description": "要被替换的旧实体标识符。"
+        },
+        "new_id": {
+          "name": "新实体 ID",
+          "description": "替换后的新实体标识符。"
+        },
+        "preview": {
+          "name": "预览模式",
+          "description": "为 true 时只预览不执行，为 false 时执行替换。"
+        }
+      }
+    },
+    "auto_update_start": {
+      "name": "启动自动更新",
+      "description": "启动 HACS Vision 定时自动更新调度。"
+    },
+    "auto_update_stop": {
+      "name": "停止自动更新",
+      "description": "停止 HACS Vision 定时自动更新调度。"
+    },
+    "auto_update_trigger": {
+      "name": "触发自动更新",
+      "description": "立即触发一次自动更新检查与安装。"
+    },
+    "auto_update_reload_settings": {
+      "name": "重载自动更新设置",
+      "description": "重新加载自动更新配置并重新调度。"
+    }
+  }
+}

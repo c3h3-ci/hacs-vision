@@ -1,0 +1,357 @@
+const API_BASE = '/api/hacs_vision';
+const LONG = 300000; // install/update can far outlast the 30s default
+
+class HACSEnhancedAPI {
+  constructor() {
+    this._token = null;
+    this._hassRef = null;
+  }
+
+  /** Call this when hass becomes available — primary token source */
+  setHass(hass) {
+    this._hassRef = hass;
+    // HassAuth token from HA frontend
+    try {
+      if (hass?.auth?.data?.access_token) {
+        this._token = hass.auth.data.access_token;
+      }
+    } catch(e) { /* ignore */ }
+  }
+
+  _getHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    // Always read the token at call time — HA access tokens expire (~30 min),
+    // so a token cached at setHass() time goes stale mid-session.
+    const token = this._hassRef?.auth?.data?.access_token;
+    if (token) {
+      this._token = token;
+      headers['Authorization'] = `Bearer ${token}`;
+    } else if (this._token) {
+      headers['Authorization'] = `Bearer ${this._token}`;
+    }
+    return headers;
+  }
+
+  async request(method, path, body, options = {}) {
+    const opts = {
+      method,
+      headers: this._getHeaders(),
+      credentials: 'include',
+    };
+    if (body) opts.body = JSON.stringify(body);
+    // Default 30s for reads; install/update/refresh and flow steps need more —
+    // a client-side abort there shows a fake failure while the backend keeps working.
+    opts.signal = AbortSignal.timeout(options.timeout ?? 30000);
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/${path}`, opts);
+    } catch(e) {
+      if (!navigator.onLine && this._onNetworkStatus) {
+        this._onNetworkStatus('offline');
+      }
+      throw e;
+    }
+    // 401 with a hass ref: the cached token likely expired — refresh it and retry once.
+    if (resp.status === 401 && this._hassRef?.auth?.data?.access_token) {
+      this._token = this._hassRef.auth.data.access_token;
+      try {
+        resp = await fetch(`${API_BASE}/${path}`, {
+          ...opts,
+          headers: this._getHeaders(),
+          signal: AbortSignal.timeout(options.timeout ?? 30000),
+        });
+      } catch(e) { /* fall through with the original 401 response */ }
+    }
+    if (!resp.ok) {
+      const err = new Error(`API error: ${resp.status}`);
+      err.status = resp.status;
+      // HA endpoints (e.g. config flow proxy) put field-level errors in the
+      // response body — keep it so callers can surface them instead of a bare status.
+      try { err.body = await resp.json(); } catch(e) { err.body = null; }
+      // F2: Network status callback (skip if suppressed for non-critical calls)
+      if (!options.suppressNetworkError && this._onNetworkStatus) {
+        if (resp.status === 429) this._onNetworkStatus('rate_limited');
+        else if (resp.status >= 500) this._onNetworkStatus('server_error');
+      }
+      throw err;
+    }
+    // F2: Clear error on success
+    if (this._onNetworkStatus) this._onNetworkStatus('online');
+    return resp.json();
+  }
+
+  get(path, options = {}) { return this.request('GET', path, null, options); }
+  post(path, body, options = {}) { return this.request('POST', path, body, options); }
+  delete(path, body, options = {}) { return this.request('DELETE', path, body, options); }
+
+  /* Repositories */
+  listRepositories(params = {}) {
+    const q = new URLSearchParams();
+    if (params.search) q.set('search', params.search);
+    if (params.category) q.set('category', params.category);
+    if (params.sort) q.set('sort', params.sort);
+    if (params.sortDir) q.set('sortDir', params.sortDir);
+    if (params.status) q.set('status', params.status);
+    if (params.tag) q.set('tag', params.tag);
+    if (params.page) q.set('page', String(params.page));
+    if (params.limit) q.set('limit', String(params.limit));
+    return this.get(`repositories?${q}`);
+  }
+  getRepository(id) { return this.get(`repositories/${id}`); }
+  getInstalled() { return this.get('installed'); }
+  getStats() { return this.get('installed/stats'); }
+  getUpdates() { return this.get('updates'); }
+  install(repository, category) { return this.post('install', { repository, category }, { timeout: LONG }); }
+  update(repositoryIds) { return this.post('update', { repository_ids: repositoryIds }, { timeout: LONG }); }
+  remove(repository) { return this.post('remove', { repository }, { timeout: LONG }); }
+  getConfig() { return this.get('config'); }
+  updateConfig(config) { return this.post('config', config); }
+  getCustomRepos() { return this.get('config/custom'); }
+  addCustomRepo(repository, category) { return this.post('config/custom', { repository, category }); }
+  removeCustomRepo(repository) { return this.delete('config/custom', { repository }); }
+  removeArchivedRepo(repoName) { return this.post('management/remove_archived', { repository: repoName }); }
+  removeRenamedRepo(oldName) { return this.post('management/remove_renamed', { old_name: oldName }); }
+  replaceRenamedRepo(oldName, newName) { return this.post('management/replace_renamed', { old_name: oldName, new_name: newName }); }
+  exportBackup() { return this.get('backup/export'); }
+  importBackup(data) { return this.post('backup/import', data); }
+  checkDependencies() { return this.get('dependencies'); }
+  refresh() { return this.post('refresh', null, { timeout: LONG }); }
+  redownload(repository, category) { return this.post('redownload', { repository, category }, { timeout: LONG }); }
+  ignoreRepo(repository) { return this.post('ignore', { repository }); }
+  unignoreRepo(repository) { return this.post('unignore', { repository }); }
+  ignoreVersion(repository, version) { return this.post('ignore-version', { repository, version }); }
+  unignoreVersion(repository) { return this.post('unignore-version', { repository }); }
+  getIgnoredVersions() { return this.get('ignored-versions'); }
+  getSkippedVersions() { return this.get('skipped-versions'); }
+
+  getHistory() {
+    return this.get('history');
+  }
+  restartHA() { return this.post('restart'); }
+  reloadHA() {
+    // Clear any pending reload markers on success
+    return this.post('reload').then(result => {
+      if (result.success) {
+        try { localStorage.removeItem('hacs_vision_pending_reload'); } catch(e) {}
+      }
+      return result;
+    });
+  }
+
+  /* Pending Reload tracking (frontend-only, localStorage-backed) */
+  getPendingReloads() {
+    try {
+      return JSON.parse(localStorage.getItem('hacs_vision_pending_reload') || '[]');
+    } catch(e) { return []; }
+  }
+  addPendingReload(fullName) {
+    try {
+      const list = this.getPendingReloads();
+      if (!list.includes(fullName)) {
+        list.push(fullName);
+        localStorage.setItem('hacs_vision_pending_reload', JSON.stringify(list));
+      }
+    } catch(e) {}
+  }
+  clearPendingReloads() {
+    try { localStorage.removeItem('hacs_vision_pending_reload'); } catch(e) {}
+  }
+
+  /* Settings */
+  getSettings() { return this.get('settings'); }
+  updateSettings(settings) { return this.post('settings', settings); }
+
+  /* Auto-update service calls */
+  async callService(domain, service, data = {}) {
+    const hass = this._hassRef;
+    if (hass?.callService) {
+      return hass.callService(domain, service, data);
+    }
+    // Fallback: call the service via REST API
+    const headers = this._getHeaders();
+    const resp = await fetch(`/api/services/${domain}/${service}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (!resp.ok) throw new Error(`Service call failed: ${resp.status}`);
+    return resp.json();
+  }
+  triggerAutoUpdate() { return this.callService('hacs_vision', 'auto_update_trigger'); }
+  reloadAutoUpdateSettings() { return this.callService('hacs_vision', 'auto_update_reload_settings'); }
+  startAutoUpdate() { return this.callService('hacs_vision', 'auto_update_start'); }
+  stopAutoUpdate() { return this.callService('hacs_vision', 'auto_update_stop'); }
+
+  /* Config Entries (for Add Integration button) */
+  getConfigEntries() { return this.get('config_entries'); }
+  getDeviceCounts(domain) { return this.get(`device_counts/${domain}`, { suppressNetworkError: true }); }
+  getAllDeviceCounts() { return this.get('device_counts', { suppressNetworkError: true }); }
+  getVersion() { return this.get('version'); }
+
+  /* Batch Operations */
+  batchInstall(repos) { return this.post('batch/install', { repositories: repos }, { timeout: LONG }); }
+  batchRemove(repos) { return this.post('batch/remove', { repositories: repos }, { timeout: LONG }); }
+
+  /* Check Updates + Notification */
+  checkUpdatesWithNotify() { return this.post('check_updates', null, { timeout: LONG }); }
+
+  /* Config Flow (proxied through backend) */
+  getFlowHandlers() { return this.get('config_flow/handlers'); }
+  startConfigFlow(domain, opts = {}) { return this.post('config_flow/start', { handler: domain, ...opts }); }
+  stepConfigFlow(flowId, data) { return this.post(`config_flow/step/${flowId}`, data); }
+  cancelConfigFlow(flowId) { return this.request('DELETE', `config_flow/flow/${flowId}`); }
+  startOptionsFlow(entryId) { return this.post('config_flow/options/start', { handler: entryId }); }
+  stepOptionsFlow(flowId, data) { return this.post(`config_flow/options/step/${flowId}`, data); }
+
+  /* Subentry Flow — for integrations with supported_subentry_types */
+  startSubentryFlow(entryId, subentryType, opts) { return this.post('config_flow/subentry/start', { handler: [entryId, subentryType], ...opts }); }
+  stepSubentryFlow(flowId, data) { return this.post(`config_flow/subentry/step/${flowId}`, data); }
+  cancelSubentryFlow(flowId) { return this.request('DELETE', `config_flow/subentry/flow/${flowId}`); }
+  getSubentries(entryId) { return this.request('GET', `config_entries/subentries/${entryId}`); }
+
+  /* Translations — read custom component translation files */
+  getTranslations(domain, lang) {
+    const langParam = lang || 'zh-Hans';
+    return this.get(`translations/${encodeURIComponent(domain)}?lang=${encodeURIComponent(langParam)}`);
+  }
+
+  /* F3: Get single repo status (for progress polling) — uses real-time HACS memory data */
+  getRepoStatus(repoId) { return this.get(`repos/status/${encodeURIComponent(repoId)}`); }
+
+  /* Favorites (server-side storage) */
+  getFavorites() { return this.get('favorites'); }
+  setFavorites(favorites) { return this.post('favorites', { favorites }); }
+
+  /* GitHub Auth */
+  verifyGitHubToken(token) { return this.post('github/verify_token', { token }); }
+  importHacsToken() { return this.get('github/import_token'); }
+  getGitHubUser() { return this.get('github/oauth/user'); }
+  oauthStart() { return this.post('github/oauth/start', {}); }
+  oauthPoll(device_code) { return this.post('github/oauth/poll', { device_code }); }
+  starRepo(repo) { return this.post('github/star', { repo }); }
+  unstarRepo(repo) { return this.post('github/unstar', { repo }); }
+  autoStarRepo() { return this.post('github/auto-star', {}); }
+  checkStarred(repo) { return this.get(`github/starred/${encodeURIComponent(repo)}`); }
+  listStarred() { return this.get('github/starred'); }
+  syncStarred(repos) { return this.post('github/sync-starred', { repos }); }
+  syncStarsToFavorites() { return this.post('github/sync-favorites'); }
+  /** Create a GitHub issue with auto-collected error logs */
+  createIssue(repo, title, body, domain, screenshots) { return this.post('github/create-issue', { repo, title, body, domain, screenshots }); }
+  listOrgRepos(org) { return this.get(`github/repos?org=${encodeURIComponent(org)}`); }
+
+  /* Version selector: get releases for a repo */
+  getRepoReleases(repoId) {
+    return this.get(`repos/releases?id=${encodeURIComponent(repoId)}`);
+  }
+
+  /* Version selector: install a specific version */
+  installVersion(repoId, version) {
+    return this.post('repos/install_version', { id: repoId, version }, { timeout: LONG });
+  }
+
+  /* Arbitrary ref: list branches + recent commits */
+  getRepoRefs(repoId) {
+    return this.get(`repos/refs?id=${encodeURIComponent(repoId)}`);
+  }
+
+  /* Arbitrary ref: install a branch name or commit SHA */
+  installRef(repoId, ref) {
+    return this.post('repos/install_ref', { id: repoId, version: ref }, { timeout: LONG });
+  }
+
+  /* F6: Get changelog with localStorage cache — tag optional, omit for latest stable */
+  async getChangelog(fullName, tag) {
+    const cacheKey = `hacs_changelog_${fullName}_${tag || 'latest'}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached);
+        if (Date.now() - timestamp < 3600000) return data;
+      }
+    } catch(e) {}
+    try {
+      const qs = tag ? `?tag=${encodeURIComponent(tag)}` : '';
+      const data = await this.get(`changelog/${fullName}${qs}`);
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
+      } catch(e) {}
+      return data;
+    } catch(e) {
+      console.error('Changelog fetch failed:', e);
+      return null;
+    }
+  }
+
+  /* README from backend proxy */
+  async getReadme(fullName) {
+    // Check cache first
+    const cacheKey = `hacs_readme_${fullName}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const { html, timestamp } = JSON.parse(cached);
+        if (Date.now() - timestamp < 3600000) { // 1 hour cache
+          return html;
+        }
+      }
+    } catch(e) {}
+
+    try {
+      // Use backend proxy instead of direct GitHub API
+      const resp = await fetch(`${API_BASE}/readme/${fullName}`, {
+        headers: this._getHeaders(),
+        credentials: 'include',
+      });
+      if (resp.ok) {
+        const html = await resp.text();
+        // Cache the result
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({ html, timestamp: Date.now() }));
+        } catch(e) {}
+        return html;
+      }
+      return null;
+    } catch(e) {
+      console.error('Failed to fetch README:', e);
+      return null;
+    }
+  }
+
+  /* README translation via HA conversation agent (returns html string or {error}) */
+  async getReadmeTranslation(fullName, targetLang, sourceHtml) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 160000); // 160s hard cap (backend caps at 150s)
+    try {
+      const resp = await fetch(`${API_BASE}/readme/translate`, {
+        method: 'POST',
+        headers: this._getHeaders(),
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: fullName,
+          target_lang: targetLang,
+          // Pass the already-rendered original HTML so the backend translates
+          // what's on screen instead of re-fetching from GitHub (avoids
+          // token / rate-limit / 404 issues on third-party repos).
+          source_html: sourceHtml || null,
+        }),
+        signal: controller.signal,
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        return data.html || null;
+      }
+      try {
+        const err = await resp.json();
+        if (err && err.error) return { error: err.error };
+      } catch (e) { /* fall through */ }
+      return { error: 'translation_failed' };
+    } catch (e) {
+      console.error('README translation failed:', e);
+      return { error: e && e.name === 'AbortError' ? 'agent_timeout' : 'network_error' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+export const api = new HACSEnhancedAPI();

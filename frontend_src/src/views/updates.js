@@ -1,0 +1,1512 @@
+import { LitElement, html, css } from 'lit';
+import { api } from '../api.js';
+import { showToast } from '../shared/toast.js';
+import { t } from '../i18n.js';
+import { getCommonStyles } from '../shared/styles.js';
+import { ConfirmDialog } from '../shared/confirm-dialog.js';
+import { getCategoryColor } from '../shared/constants.js';
+
+class UpdatesView extends LitElement {
+  static properties = {
+    updates: { type: Array },
+    loading: { type: Boolean },
+    refreshing: { type: Boolean },
+    updating: { type: Boolean },
+    search: { type: String },
+    _installingIds: { type: Object, state: true },
+    _changelogs: { type: Object, state: true },
+    _searchText: { type: String, state: true },
+    _selectedIds: { type: Object, state: true },
+    _selectedRepos: { type: Array, state: true },
+    _batchMode: { type: Boolean, state: true },
+    _viewMode: { type: String, state: true },
+    _favs: { type: Object, state: true },
+    _categoryFilter: { type: String, state: true },
+    _filterExpanded: { type: Boolean, state: true },
+    _updateProgress: { type: Object, state: true },
+    _skippedVersions: { type: Array, state: true },
+    _showSkipped: { type: Boolean },
+    _history: { type: Array, state: true },
+    _showUpdatable: { type: Boolean },
+    _showUpdated: { type: Boolean },
+    autoUpdateRepos: { type: Array },
+    // Re-render trigger on language change
+    langVersion: { type: Number },
+  };
+
+  constructor() {
+    super();
+    this.updates = [];
+    this.loading = false;
+    this.refreshing = false;
+    this.updating = false;
+    this.search = '';
+    this._searchTimer = null;
+    this._installingIds = {};
+    this._changelogs = {};
+    this._changelogsLoading = {};
+    this._expandedChangelogs = {};
+    this._searchText = '';
+    this._selectedIds = {};
+    this._selectedRepos = [];
+    this._batchMode = false;
+    this._favs = {};
+    this._updateProgress = null;
+    this._skippedVersions = [];
+    this._showSkipped = false;
+    this._history = [];
+    this._showUpdatable = true;
+    this._showUpdated = false;
+    this.autoUpdateRepos = [];
+    this.__auLoaded = false;
+    const saved = (() => { try { return localStorage.getItem('hacs_vision_view_mode'); } catch { return null; } })();
+    this._viewMode = saved || 'card';
+    this._filterExpanded = false;
+  }
+
+  static styles = [
+    getCommonStyles(),
+    css`
+      :host { display: block; touch-action: manipulation; background: var(--primary-background-color); }
+
+      .controls-right { flex-shrink: 0; }
+      .controls-right .btn-icon {
+        width: 36px; height: 36px; padding: 0; border-radius: 10px;
+        border: 1px solid var(--divider-color); background: var(--card-background-color);
+        color: var(--secondary-text-color); cursor: pointer; display: flex;
+        align-items: center; justify-content: center; touch-action: manipulation; font-size: 14px;
+      }
+      .controls-right .btn-icon:hover { border-color: var(--primary-color); color: var(--primary-color); }
+      .controls-right .btn-icon.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+
+      /* ===== Skipped versions section ===== */
+      .skipped-section {
+        margin-top: 16px; padding: 16px; background: var(--card-background-color, #fff);
+        border-radius: 14px; border: 1px solid var(--divider-color, #e0e0e0);
+        animation: fadeSlideIn 0.2s ease;
+      }
+      @keyframes fadeSlideIn {
+        from { opacity: 0; transform: translateY(-8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      /* ===== Collapsible Section ===== */
+      .section-header {
+        display: flex; align-items: center; gap: 8px;
+        padding: 12px 14px; margin-bottom: 10px;
+        background: var(--card-background-color, #fff);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 12px; cursor: pointer;
+        transition: all 0.15s; user-select: none;
+      }
+      .section-header:hover { border-color: var(--primary-color); }
+      .section-header-icon {
+        width: 20px; height: 20px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: var(--secondary-text-color);
+        transition: transform 0.2s;
+      }
+      .section-header-icon.expanded { transform: rotate(90deg); }
+      .section-header-label {
+        flex: 1; font-size: 14px; font-weight: 600;
+        color: var(--primary-text-color);
+      }
+      .section-header-count {
+        font-size: 12px; font-weight: 500;
+        padding: 2px 10px; border-radius: 10px;
+        background: var(--primary-color, #03a9f4);
+        color: #fff; flex-shrink: 0;
+      }
+      .section-header-count.updated-count { background: var(--success-color, #0f9d58); }
+      .section-header-count.skipped-count { background: #9e9e9e; }
+
+      /* ===== History (updated) section ===== */
+      .history-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 8px; margin-bottom: 12px;
+      }
+      .history-card {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-radius: 10px;
+        background: var(--card-background-color, #fff);
+        border: 1px solid var(--divider-color, #e0e0e0);
+        cursor: pointer; transition: all 0.15s;
+        opacity: 0.75;
+      }
+      .history-card:hover { opacity: 1; border-color: var(--primary-color); }
+      .history-avatar {
+        width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-size: 13px; font-weight: 700;
+        background: #78909c;
+      }
+      .history-body { flex: 1; min-width: 0; }
+      .history-name {
+        font-size: 13px; font-weight: 600; color: var(--primary-text-color);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .history-meta {
+        font-size: 11px; color: var(--secondary-text-color);
+        margin-top: 2px;
+      }
+      .history-arrow { color: var(--warning-color); font-weight: 600; }
+      .history-time {
+        font-size: 11px; color: var(--secondary-text-color); flex-shrink: 0;
+        white-space: nowrap;
+      }
+      .skipped-header {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+        font-size: 13px; font-weight: 600; color: var(--primary-text-color);
+      }
+      .skipped-count { color: var(--secondary-text-color); font-weight: 400; }
+      .skipped-list { display: flex; flex-direction: column; gap: 6px; }
+      .skipped-item {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 14px;
+        background: var(--secondary-background-color, #f5f5f5);
+        border-radius: 10px; border: 1px solid var(--divider-color, #e0e0e0);
+        transition: background 0.15s;
+      }
+      .skipped-item:hover { background: var(--card-background-color); }
+      .skipped-name {
+        flex: 1; font-size: 13px; color: var(--primary-text-color);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .skipped-version {
+        font-size: 11px; color: var(--secondary-text-color); flex-shrink: 0;
+        padding: 2px 8px; background: rgba(255,152,0,0.12); border-radius: 4px;
+      }
+      .skipped-unskip {
+        flex-shrink: 0; padding: 4px 12px; font-size: 11px; border-radius: 6px;
+        border: 1px solid var(--primary-color); color: var(--primary-color);
+        background: transparent; cursor: pointer; transition: all 0.15s;
+        touch-action: manipulation;
+      }
+      .skipped-unskip:hover { background: var(--primary-color); color: #fff; }
+
+      .card {
+        border: 1px solid var(--divider-color); border-radius: 14px;
+        background: var(--card-background-color); overflow: hidden;
+        transition: all 0.2s, box-shadow 0.2s; cursor: pointer;
+        display: flex; flex-direction: column; min-height: 290px;
+        position: relative;
+      }
+      .card:hover { border-color: var(--primary-color); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+
+      .img-container {
+        height: 120px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, var(--secondary-background-color, #f0f0f0) 0%, var(--card-background-color, #fff) 100%);
+        position: relative;
+      }
+      .avatar {
+        width: 52px; height: 52px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 24px; font-weight: 700; color: #fff;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        overflow: hidden; background: transparent;
+      }
+      .avatar img { width: 100%; height: 100%; object-fit: cover; }
+      .avatar .initials {
+        display: flex; width: 100%; height: 100%;
+        align-items: center; justify-content: center; border-radius: 50%;
+      }
+      .badge-corner {
+        padding: 3px 8px; border-radius: 5px;
+        font-size: 10px; font-weight: 600; color: #fff;
+      }
+      .badge-corner.integration { background: #1565c0; }
+      .badge-corner.plugin { background: #7b1fa2; }
+      .badge-corner.theme { background: #2e7d32; }
+      .badge-corner.template { background: #6a1b9a; }
+
+      .refresh-btn {
+        padding: 8px; border: 1px solid var(--divider-color); border-radius: 10px;
+        background: var(--card-background-color); color: var(--primary-text-color);
+        cursor: pointer; display: flex; align-items: center; justify-content: center;
+        transition: all 0.25s; width: 36px; height: 36px;
+        touch-action: manipulation; flex-shrink: 0;
+      }
+      .refresh-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+      .refresh-btn svg { width: 16px; height: 16px; }
+
+    .filter-toggle-sm {
+      display: none; width: 36px; height: 36px; flex-shrink: 0;
+      border: 1px solid var(--divider-color); border-radius: 10px;
+      background: var(--card-background-color); color: var(--secondary-text-color);
+      cursor: pointer; align-items: center; justify-content: center; padding: 0;
+      touch-action: manipulation;
+    }
+    .filter-toggle-sm:hover { border-color: var(--primary-color); color: var(--primary-color); }
+
+      .status-badge-update {
+        position: absolute; bottom: 8px; left: 8px; z-index: 2;
+        padding: 3px 8px; border-radius: 5px;
+        font-size: 10px; font-weight: 600; color: #fff;
+        background: rgba(255,152,0,0.85);
+      }
+
+      /* Top bar: checkbox + category badge */
+      .top-bar {
+        position: absolute; top: 0; left: 0; right: 0;
+        display: flex; align-items: center; gap: 6px;
+        padding: 10px; z-index: 3;
+      }
+      .top-bar .checkbox {
+        width: 18px; height: 18px; border-radius: 4px;
+        border: 2px solid rgba(255,255,255,0.7); cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0; transition: all 0.2s;
+        background: rgba(0,0,0,0.25);
+        -webkit-appearance: none; appearance: none; touch-action: manipulation;
+      }
+      .top-bar .checkbox:checked {
+        background: var(--primary-color); border-color: var(--primary-color);
+      }
+      .top-bar .checkbox:checked::after {
+        content: '✓'; color: #fff; font-size: 12px; font-weight: 700;
+      }
+
+      .fav-btn {
+        position: absolute; top: 10px; right: 10px; z-index: 3;
+        width: 32px; height: 32px; border-radius: 50%;
+        border: none; background: rgba(255,255,255,0.85);
+        cursor: pointer; display: flex; align-items: center; justify-content: center;
+        transition: all 0.2s; padding: 0;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+      }
+      .fav-btn:hover { transform: scale(1.1); }
+      .fav-btn svg { width: 18px; height: 18px; transition: all 0.2s; }
+      .fav-btn.active svg { fill: #ff9800; color: #ff9800; }
+      .fav-btn:not(.active) svg { fill: none; color: var(--secondary-text-color, #727272); }
+
+      .card-body { padding: 14px; flex: 1; display: flex; flex-direction: column; }
+      .card-name {
+        font-size: 15px; font-weight: 600; color: var(--primary-text-color);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 8px;
+      }
+
+      .version-row { display: flex; gap: 12px; margin-bottom: 12px; }
+      .version-item { flex: 1; text-align: center; padding: 8px; border-radius: 8px; background: var(--secondary-background-color); }
+      .version-label { font-size: 10px; color: var(--secondary-text-color); text-transform: uppercase; margin-bottom: 4px; }
+      .version-value { font-size: 14px; font-weight: 700; }
+      .version-value.old { color: var(--warning-color, #ff8f00); }
+      .version-value.new { color: var(--success-color, #0f9d58); }
+
+      .card-desc { font-size: 12px; color: var(--secondary-text-color); margin-bottom: 12px; line-height: 1.5; }
+
+      /* Multi-select checkbox */
+      .checkbox {
+        width: 18px; height: 18px; border-radius: 4px;
+        border: 2px solid var(--secondary-text-color); cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0; transition: all 0.2s; background: transparent;
+        -webkit-appearance: none; appearance: none; touch-action: manipulation;
+      }
+      .checkbox:checked {
+        background: var(--primary-color); border-color: var(--primary-color);
+      }
+      .checkbox:checked::after {
+        content: '✓'; color: #fff; font-size: 12px; font-weight: 700;
+      }
+
+      /* ===== Action Bar (matches repo-card) ===== */
+      .actions {
+        display: flex; gap: 6px;
+        padding: 8px 14px;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+        margin-top: auto; background: var(--card-background-color, #fff);
+      }
+      .action-btn {
+        flex: 1; min-width: 0; padding: 8px 4px; border-radius: 10px;
+        font-size: 12px; text-align: center; justify-content: center;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #212121);
+        cursor: pointer; transition: all 0.2s;
+        display: flex; align-items: center; gap: 4px;
+        touch-action: manipulation;
+      }
+      .action-btn:hover { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
+      .action-btn.primary {
+        background: var(--primary-color, #03a9f4); border-color: var(--primary-color, #03a9f4); color: #fff;
+      }
+      .action-btn.primary:hover { opacity: 0.9; }
+      .action-btn.installing {
+        opacity: 0.7; cursor: not-allowed;
+        animation: btnPulse 1.5s infinite;
+      }
+      .action-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+      @keyframes btnPulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 0.45; } }
+
+      /* Auto-update toggle row (in card body, not actions bar) */
+      .au-toggle-row {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 14px 4px; margin: 0;
+        border-top: 1px solid var(--divider-color, #e0e0e0);
+        font-size: 12px;
+      }
+      .au-toggle-row .au-label {
+        color: var(--secondary-text-color); display: flex; align-items: center; gap: 4px;
+      }
+      .au-toggle-row .au-label svg {
+        width: 14px; height: 14px;
+      }
+      .au-toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; cursor: pointer; }
+      .au-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+      .au-toggle .slider {
+        position: absolute; inset: 0; background: var(--divider-color, #ccc);
+        border-radius: 20px; transition: 0.3s; cursor: pointer;
+      }
+      .au-toggle .slider::before {
+        content: ''; position: absolute; height: 16px; width: 16px;
+        left: 2px; bottom: 2px; background: #fff;
+        border-radius: 50%; transition: 0.3s;
+      }
+      .au-toggle input:checked + .slider { background: #4caf50; }
+      .au-toggle input:checked + .slider::before { transform: translateX(16px); }
+
+      /* ===== Filter bar (matches browse/integrations) ===== */
+      .filter-bar {
+        display: flex; align-items: center; gap: 6px;
+        margin-bottom: 10px; overflow-x: auto; flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch; scrollbar-width: none;
+      }
+      .filter-bar::-webkit-scrollbar { display: none; }
+      .filter-bar .chip {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 5px 12px; border-radius: 16px; border: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--card-background-color); color: var(--secondary-text-color);
+        font-size: 11px; cursor: pointer; white-space: nowrap; transition: all 0.2s;
+        touch-action: manipulation; user-select: none;
+      }
+      .filter-bar .chip:hover { border-color: var(--primary-color); color: var(--primary-color); }
+      .filter-bar .chip-active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+      .filter-bar .chip-count { font-size: 10px; opacity: 0.7; margin-left: 2px; }
+
+      /* F6: Changelog preview */
+      .changelog-preview {
+        margin-top: 8px; padding: 10px 12px;
+        background: var(--secondary-background-color);
+        border-radius: 8px; font-size: 12px;
+      }
+      .changelog-preview-title { font-weight: 600; margin-bottom: 6px; color: var(--primary-text-color); }
+      .changelog-preview-body {
+        color: var(--secondary-text-color); white-space: pre-wrap;
+        line-height: 1.5; max-height: 80px; overflow: hidden;
+      }
+      .changelog-preview-link {
+        color: var(--primary-color); font-size: 11px; text-decoration: none;
+        display: inline-block; margin-top: 6px;
+      }
+      .changelog-preview-link:hover { text-decoration: underline; }
+      .changelog-preview-body.expanded { max-height: none; }
+      .changelog-expand-btn {
+        display: inline-block; margin-top: 6px; margin-right: 10px;
+        color: var(--primary-color); font-size: 11px; cursor: pointer;
+        background: none; border: none; padding: 0;
+      }
+      .changelog-expand-btn:hover { text-decoration: underline; }
+
+      @keyframes spin { 100% { transform: rotate(360deg); } }
+
+      /* ===== View Mode Toggle ===== */
+      .view-toggle {
+        display: flex; border: 1px solid var(--divider-color); border-radius: 8px;
+        overflow: hidden; flex-shrink: 0;
+      }
+      .view-toggle-btn {
+        padding: 6px 10px; border: 1px solid var(--divider-color); border-radius: 10px;
+        background: var(--card-background-color);
+        color: var(--secondary-text-color); cursor: pointer; font-size: 14px;
+        transition: all 0.2s; min-width: 36px; min-height: 36px;
+        display: flex; align-items: center; justify-content: center;
+        touch-action: manipulation;
+      }
+      .view-toggle-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+
+      /* ===== List View (HACS-style table) ===== */
+      .list-view { width: 100%; overflow-x: auto; }
+      .list-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
+      .list-table th {
+        text-align: left; padding: 10px 8px; font-size: 11px; font-weight: 600;
+        color: var(--secondary-text-color); text-transform: uppercase;
+        border-bottom: 2px solid var(--divider-color); white-space: nowrap;
+        user-select: none; letter-spacing: 0.3px;
+      }
+      .list-table td {
+        padding: 10px 8px; border-bottom: 1px solid var(--divider-color);
+        vertical-align: middle;
+      }
+      .list-table .col-icon { width: 40px; }
+      .list-table .icon-cell {
+        width: 32px; height: 32px; border-radius: 6px;
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-size: 14px; font-weight: 700;
+        overflow: hidden;
+      }
+      .list-table .name-cell {
+        font-weight: 500; color: var(--primary-text-color); width: 100%;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .list-table .desc-cell {
+        font-size: 11px; color: var(--secondary-text-color);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0;
+      }
+      .custom-tag-list {
+        display: inline-block; margin-top: 4px;
+        font-size: 9px; padding: 1px 6px; border-radius: 4px;
+        background: #ff6f00; color: #fff; font-weight: 700;
+      }
+      .topic-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+      .topic-chip {
+        font-size: 9px; padding: 1px 6px; border-radius: 4px;
+        background: var(--secondary-background-color);
+        color: var(--secondary-text-color); border: 1px solid var(--divider-color);
+      }
+      .list-table tr { cursor: pointer; transition: background 0.15s; }
+      .list-table tbody tr:hover { background: var(--secondary-background-color); }
+
+      .status-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+      }
+      .status-badge.pending-upgrade { background: rgba(255,152,0,0.15); color: #ff9800; }
+
+      .update-all-btn {
+        padding: 6px 10px; border-radius: 8px;
+        background: var(--primary-color); color: #fff; border: none;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        display: flex; align-items: center; gap: 4px; transition: opacity 0.2s;
+        touch-action: manipulation; white-space: nowrap; min-height: 36px;
+      }
+      .update-all-btn:hover { opacity: 0.9; }
+      .update-all-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .update-all-btn.selected-btn {
+        background: transparent; border: 1px solid var(--primary-color);
+        color: var(--primary-color);
+      }
+      .update-all-btn.selected-btn:disabled { opacity: 0.4; }
+
+      @media (max-width: 768px) {
+        .controls { flex-wrap: nowrap; gap: 4px; margin-bottom: 0; }
+        .search { flex: 1; min-width: 0; height: 36px; box-sizing: border-box; border: 1px solid var(--divider-color); border-radius: 10px; }
+        .search input { padding: 7px 10px 7px 30px; font-size: 13px; border: none; background: transparent; height: 100%; }
+        .search-icon { left: 10px; }
+        .controls-right { flex-shrink: 0; }
+        .desktop-only { display: none; }
+        .filter-bar { padding: 6px 10px; flex-wrap: nowrap; overflow: hidden; background: var(--secondary-background-color, #f5f5f5); border-radius: 10px; }
+        .filter-bar .fs-chips { display: none; }
+        .filter-bar.expanded .fs-chips { display: flex; }
+        .filter-bar.expanded { flex-wrap: wrap; }
+        .filter-bar .fs-actions { display: none; }
+        .filter-bar.expanded .fs-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; }
+        .filter-toggle-sm { display: flex; }
+        .card { min-height: 260px; }
+        .img-container { height: 100px; }
+        .avatar { width: 44px; height: 44px; font-size: 20px; }
+        .card-body { padding: 10px; }
+        .card-name { font-size: 14px; }
+        .version-row { gap: 8px; }
+        .version-item { padding: 6px; }
+        .version-label { font-size: 9px; }
+        .version-value { font-size: 12px; }
+        .card-desc { font-size: 11px; margin-bottom: 10px; }
+        .action-btn { min-height: 44px; padding: 10px 6px; font-size: 11px; }
+        .fav-btn { width: 36px; height: 36px; }
+        .fav-btn svg { width: 20px; height: 20px; }
+        .version-row { gap: 8px; }
+        .version-item { padding: 6px; }
+        .version-label { font-size: 9px; }
+        .version-value { font-size: 12px; }
+        .card-desc { font-size: 11px; margin-bottom: 10px; }
+        .btn.primary { min-height: 44px; }
+        .update-all-btn { flex: 1; min-width: 80px; justify-content: center; min-height: 36px; font-size: 11px; padding: 4px 8px; }
+      }
+
+      .batch-bar {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 8px 12px; margin: 6px 0;
+        background: var(--primary-color, #03a9f4); color: #fff;
+        border-radius: 8px; font-size: 13px; font-weight: 600;
+      }
+      .batch-bar-btn {
+        padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: 600;
+        background: rgba(255,255,255,0.2); color: #fff;
+        border: 1px solid rgba(255,255,255,0.4); cursor: pointer;
+      }
+      .batch-bar-btn:hover { background: rgba(255,255,255,0.35); }
+      .batch-bar-btn.danger { border-color: #ff5252; color: #ff5252; }
+
+      /* Progress bar for batch update */
+      .update-progress {
+        padding: 8px 12px; margin: 6px 0;
+        display: flex; align-items: center; gap: 10px;
+      }
+      .progress-track {
+        flex: 1; height: 6px; border-radius: 3px;
+        background: var(--divider-color, #e0e0e0); overflow: hidden;
+      }
+      .progress-fill {
+        height: 100%; border-radius: 3px;
+        background: var(--primary-color, #03a9f4);
+        transition: width 0.3s ease;
+      }
+      @keyframes pulse {
+        0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; }
+      }
+      .refresh-btn.spinning svg { animation: spin 1s linear infinite; }
+      .refresh-btn.spinning { opacity: 0.6; }
+      .progress-label {
+        font-size: 12px; color: var(--secondary-text-color);
+        white-space: nowrap; flex-shrink: 0;
+      }
+
+      /* Install progress bar inside card */
+      .card-install-progress {
+        flex: 1;
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 10px; border-radius: 10px;
+        background: var(--secondary-background-color, #f5f5f5);
+      }
+      .card-install-progress-track {
+        flex: 1; height: 8px; border-radius: 4px;
+        background: var(--divider-color, #e0e0e0); overflow: hidden;
+      }
+      .card-install-progress-fill {
+        height: 100%; border-radius: 4px;
+        background: linear-gradient(90deg, var(--primary-color, #03a9f4), #4caf50);
+        transition: width 0.5s ease;
+      }
+      .card-install-progress-label {
+        font-size: 12px; font-weight: 700;
+        color: var(--primary-color, #03a9f4);
+        flex-shrink: 0; min-width: 36px; text-align: right;
+      }
+    `
+  ];
+
+  async connectedCallback() {
+    super.connectedCallback();
+    // 首次加载只显示已缓存的更新列表，不触发 refresh（慢）
+    this.loading = true;
+    try {
+      const result = await api.getUpdates();
+      this.updates = Array.isArray(result) ? result : (result.updates || []);
+      this._lazyLoadChangelogs();
+    } catch(e) {
+      console.error('Failed to load updates', e);
+      this.updates = [];
+      showToast(t('loadFailedSimple'), 'error');
+    }
+    this.loading = false;
+    await this._loadSkippedVersions();
+    await this._loadHistory();
+    if (!this.__auLoaded) {
+      this._loadAutoUpdateSettings();
+      this.__auLoaded = true;
+    }
+  }
+
+  /* 检查更新：refresh + 刷新列表 + 显示进度 */
+  async _refresh() {
+    this.refreshing = true;
+    this._updateProgress = { current: 0, total: 0, currentName: t('checkingUpdates')  };
+    try {
+      await api.refresh();
+      this._updateProgress = { ...this._updateProgress, currentName: t('loadingUpdates')  };
+      const result = await api.getUpdates();
+      this.updates = Array.isArray(result) ? result : (result.updates || []);
+      this._changelogs = {};
+      this._lazyLoadChangelogs();
+      this._loadSkippedVersions();
+      this._loadHistory();
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      console.error('Refresh failed', e);
+      showToast(t('loadFailedSimple'), 'error');
+    }
+    this.refreshing = false;
+    this._updateProgress = null;
+  }
+
+  /* Lazy load changelogs: load one at a time with gap */
+  _lazyLoadChangelogs() {
+    const repos = this.updates.filter(r => r.full_name && !this._changelogs[r.full_name]);
+    if (repos.length === 0) return;
+    let i = 0;
+    const next = () => {
+      if (i >= repos.length) return;
+      this._loadChangelog(repos[i++].full_name, repos[i-1].latest_version);
+      setTimeout(next, 150);
+    };
+    setTimeout(next, 300);
+  }
+
+  async _load() {
+    this.loading = true;
+    try {
+      // 只获取缓存的更新列表，不调 refresh（慢）
+      const result = await api.getUpdates();
+      this.updates = Array.isArray(result) ? result : (result.updates || []);
+      this._loadSkippedVersions();
+      this._loadHistory();
+    } catch(e) {
+      console.error('Failed to load updates', e);
+      this.updates = [];
+      showToast(t('loadFailedSimple'), 'error');
+    }
+    this.loading = false;
+  }
+
+  /* Lazy load changelog for a single repo */
+  async _loadChangelog(fullName, version) {
+    if (!fullName || this._changelogs[fullName] || this._changelogsLoading[fullName]) return;
+    this._changelogsLoading = { ...this._changelogsLoading, [fullName]: true };
+    try {
+      const data = await api.getChangelog(fullName, version);
+      if (data?.body) {
+        this._changelogs = { ...this._changelogs, [fullName]: data };
+      }
+    } catch {}
+    this._changelogsLoading = { ...this._changelogsLoading, [fullName]: false };
+  }
+
+  _toggleChangelog(fullName) {
+    this._expandedChangelogs = {
+      ...this._expandedChangelogs,
+      [fullName]: !this._expandedChangelogs?.[fullName]
+    };
+  }
+
+  /* F6: Load changelogs for all updates — parallel */
+
+  /* "Update Selected" — updates only checked repos with progress */
+  async _updateSelected() {
+    const ids = Object.keys(this._selectedIds).filter(k => this._selectedIds[k]);
+    if (ids.length === 0) return;
+    const confirmed = await ConfirmDialog.show(this, {
+      message: t('confirmUpdateSelected', { n: ids.length }),
+      confirmText: t('confirmUpdate'),
+      danger: false,
+    });
+    if (!confirmed) return;
+    this.updating = true;
+    this._updateProgress = { current: 0, total: ids.length, currentName: '' };
+    try {
+      for (const rid of ids) {
+        const repo = this.updates.find(r => (r.id || r.full_name) === rid);
+        this._updateProgress = { ...this._updateProgress, currentName: repo?.name || repo?.full_name || rid };
+        this.requestUpdate();
+        await api.update([rid]);
+        this._updateProgress = { ...this._updateProgress, current: this._updateProgress.current + 1 };
+      }
+      showToast(`${t('allUpdatesStarted')} (${ids.length})`, 'success');
+      this._selectedIds = {};
+      this._updateProgress = null;
+      this._load();
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+      this._updateProgress = null;
+    }
+    this.updating = false;
+  }
+
+  /* "Skip Selected" — skip version for all checked repos */
+  async _skipSelected() {
+    const ids = Object.keys(this._selectedIds).filter(k => this._selectedIds[k]);
+    if (ids.length === 0) return;
+    const confirmed = await ConfirmDialog.show(this, {
+      message: t('confirmSkipVersion', { n: ids.length }),
+      confirmText: t('ignoreVersion'),
+      danger: false,
+    });
+    if (!confirmed) return;
+    let skipped = 0;
+    for (const rid of ids) {
+      const repo = this.updates.find(r => (r.id || r.full_name) === rid);
+      if (!repo?.latest_version) continue;
+      try {
+        await api.ignoreVersion(repo.full_name, repo.latest_version);
+        skipped++;
+      } catch(e) {
+        console.warn(`Skip failed for ${repo.full_name}:`, e);
+      }
+    }
+    showToast(t('skipVersionDone', { ok: skipped, total: ids.length }), 'success');
+    this._selectedIds = {};
+    this._load();
+    this._loadSkippedVersions();
+    this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+  }
+
+  /* "Update All" — updates ALL repos with real-time progress */
+  async _updateAll() {
+    const allIds = this.updates.map(r => r.id || r.full_name);
+    if (allIds.length === 0) return;
+    const confirmed = await ConfirmDialog.show(this, {
+      message: t('confirmUpdateAll', { n: allIds.length }),
+      confirmText: t('confirmUpdate'),
+      danger: false,
+    });
+    if (!confirmed) return;
+    this.updating = true;
+    this._updateProgress = { current: 0, total: allIds.length, currentName: '' };
+    try {
+      for (const repo of this.updates) {
+        const rid = repo.id || repo.full_name;
+        this._updateProgress = { ...this._updateProgress, currentName: repo.name || repo.full_name };
+        this.requestUpdate();
+        await api.update([rid]);
+        this._updateProgress = { ...this._updateProgress, current: this._updateProgress.current + 1 };
+      }
+      showToast(`${t('allUpdatesStarted')} (${allIds.length})`, 'success');
+      this._selectedIds = {};
+      this._updateProgress = null;
+      this._load();
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+      this._updateProgress = null;
+    }
+    this.updating = false;
+  }
+
+  _toggleSelect(repoId) {
+    this._selectedIds = { ...this._selectedIds, [repoId]: !this._selectedIds[repoId] };
+  }
+
+  _toggleSelectFull(fullName) {
+    if (this._selectedRepos.includes(fullName)) {
+      this._selectedRepos = this._selectedRepos.filter(n => n !== fullName);
+    } else {
+      this._selectedRepos = [...this._selectedRepos, fullName];
+    }
+  }
+
+  async _batchDo(action) {
+    if (this._selectedRepos.length === 0) return;
+    if (action === 'remove') {
+      const ok = await ConfirmDialog.show(this, {
+        message: t('batchRemoveConfirm', { n: this._selectedRepos.length }),
+        confirmText: t('batchRemove'),
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    try {
+      showToast(t('batchInProgress'), 'info');
+      if (action === 'update') {
+        this.updating = true;
+        this._updateProgress = { current: 0, total: this._selectedRepos.length, currentName: '' };
+        for (const rid of this._selectedRepos) {
+          const repo = this.updates.find(r => (r.id || r.full_name) === rid);
+          this._updateProgress = { ...this._updateProgress, currentName: repo?.name || repo?.full_name || rid };
+          this.requestUpdate();
+          await api.update([rid]);
+          this._updateProgress = { ...this._updateProgress, current: this._updateProgress.current + 1 };
+        }
+        this._updateProgress = null;
+      } else if (action === 'remove') {
+        await api.batchRemove(this._selectedRepos.map(r => r));
+      }
+      showToast(t('batchComplete'), 'success');
+      this._selectedRepos = [];
+      this._batchMode = false;
+      this._load();
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      showToast(`${action} failed: ${e.message}`, 'error');
+    }
+  }
+
+  _toggleSelectAll() {
+    const filtered = this._getFiltered();
+    if (this._isAllSelected()) {
+      this._selectedIds = {};
+    } else {
+      const sel = {};
+      for (const r of filtered) {
+        sel[r.id || r.full_name] = true;
+      }
+      this._selectedIds = sel;
+    }
+  }
+
+  _isAllSelected() {
+    const filtered = this._getFiltered();
+    if (filtered.length === 0) return false;
+    return filtered.every(r => this._selectedIds[r.id || r.full_name]);
+  }
+
+  _selectedCount() {
+    return Object.keys(this._selectedIds).filter(k => this._selectedIds[k]).length;
+  }
+
+  /* F3: Single update with progress indicator + polling */
+  async _updateOne(repo) {
+    const repoId = repo.id || repo.full_name;
+    this._installingIds = { ...this._installingIds, [repoId]: { percentage: 0, stage: 'starting', message: t('updatingProgress') } };
+    this.requestUpdate();
+    try {
+      await api.update([repoId]);
+      // Poll for completion with progress
+      const targetVer = repo.latest_version;
+      let attempts = 0;
+      const poll = async () => {
+        if (!this.isConnected) return; // view torn down — stop polling silently
+        if (attempts++ > 30) {
+          const next = { ...this._installingIds };
+          delete next[repoId];
+          this._installingIds = next;
+          this.requestUpdate();
+          showToast(`${t('updateFailed')}: timeout`, 'error');
+          return;
+        }
+        try {
+          const status = await api.getRepoStatus(repoId);
+          // Update progress from backend if available
+          if (status?.progress) {
+            this._installingIds = { ...this._installingIds, [repoId]: status.progress };
+            this.requestUpdate();
+          }
+          if (status?.installed_version === targetVer || (status?.installed && !status?.has_update)) {
+            const next = { ...this._installingIds };
+            delete next[repoId];
+            this._installingIds = next;
+            this.requestUpdate();
+            showToast(`${t('updateComplete')}: ${repo.full_name || repo.name}`, 'success');
+            this._load();
+            this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+            return;
+          }
+        } catch(e) {}
+        setTimeout(poll, 2000);
+      };
+      setTimeout(poll, 2000);
+    } catch(e) {
+      const next = { ...this._installingIds };
+      delete next[repoId];
+      this._installingIds = next;
+      this.requestUpdate();
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _skipVersion(repo) {
+    const fullName = repo.full_name;
+    if (!fullName) return;
+    const version = repo.latest_version;
+    if (!version) return;
+    const ok = await ConfirmDialog.show(this, {
+      message: t('confirmIgnoreVersion', { repo: fullName, version }),
+      confirmText: t('ignoreVersion'),
+      danger: false,
+    });
+    if (!ok) return;
+    try {
+      await api.ignoreVersion(fullName, version);
+      showToast(`${t('ignoreVersion')}: ${version}`, 'success');
+      // Reload updates — the skipped repo will no longer be in the list
+      const result = await api.getUpdates();
+      this.updates = Array.isArray(result) ? result : (result.updates || []);
+      this._loadSkippedVersions();
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      showToast(`${t('skipVersionFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _loadSkippedVersions() {
+    try {
+      const result = await api.getSkippedVersions();
+      this._skippedVersions = (result && result.skipped) || [];
+    } catch(e) {
+      this._skippedVersions = [];
+    }
+    this.requestUpdate();
+  }
+
+  async _unskipVersion(sv) {
+    const ok = await ConfirmDialog.show(this, {
+      message: t('confirmUnskipVersion', { name: sv.full_name, ver: sv.skipped_version }),
+      confirmText: t('unignoreVersion'),
+      danger: false,
+    });
+    if (!ok) return;
+    try {
+      await api.unignoreVersion(sv.full_name);
+      showToast(`${t('unignoreVersion')}: ${sv.full_name}`, 'success');
+      this._loadSkippedVersions();
+      this._load();  // Reload updates list to show the now-available update
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+    } catch(e) {
+      showToast(`${t('unskipVersionFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  /* ---- Auto-update toggle ---- */
+
+  async _loadHistory() {
+    try {
+      const result = await api.getHistory();
+      this._history = (result && result.history) || [];
+    } catch(e) {
+      this._history = [];
+    }
+    this.requestUpdate();
+  }
+
+  _timeAgo(isoStr) {
+    if (!isoStr) return '';
+    const then = new Date(isoStr);
+    const now = Date.now();
+    const diffMs = now - then.getTime();
+    if (diffMs < 0) return t('justNow');
+    const diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 60) return t('justNow');
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return t('minAgo', { n: diffMin });
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) return t('hourAgo', { n: diffHour });
+    const diffDay = Math.floor(diffHour / 24);
+    return t('dayAgo', { n: diffDay });
+  }
+
+  async _loadAutoUpdateSettings() {
+    try {
+      const settings = await api.getSettings();
+      this.autoUpdateRepos = settings?.auto_update_repos || [];
+    } catch(e) {
+      console.debug('Failed to load auto-update settings', e);
+      this.autoUpdateRepos = [];
+    }
+  }
+
+  _isAutoUpdate(repo) {
+    return Array.isArray(this.autoUpdateRepos) && this.autoUpdateRepos.includes(repo?.full_name);
+  }
+
+  async _handleAutoUpdateToggle(repo) {
+    const fullName = repo?.full_name;
+    if (!fullName) return;
+
+    // Optimistic update
+    const prevRepos = [...this.autoUpdateRepos];
+    const newRepos = [...this.autoUpdateRepos];
+    const idx = newRepos.indexOf(fullName);
+    if (idx >= 0) {
+      newRepos.splice(idx, 1);
+    } else {
+      newRepos.push(fullName);
+    }
+    this.autoUpdateRepos = newRepos;
+
+    try {
+      await api.updateSettings({ auto_update_repos: newRepos });
+      await api.reloadAutoUpdateSettings();
+      showToast(fullName + (idx >= 0 ? t('autoUpdateToggledOff') : t('autoUpdateToggledOn')), 'success');
+    } catch(e) {
+      // Rollback on failure
+      this.autoUpdateRepos = prevRepos;
+      showToast(`${t('autoUpdateToggleFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  _getFiltered() {
+    let list = this.updates;
+    if (this._categoryFilter && this._categoryFilter !== 'all') {
+      list = list.filter(r => (r.category || 'integration') === this._categoryFilter);
+    }
+    if (this.search) {
+      const q = this.search.toLowerCase();
+      let extractedPath = null;
+      const githubMatch = q.match(/github\.com\/([^/]+\/[^/\s?#]+)/i);
+      if (githubMatch) {
+        extractedPath = githubMatch[1].replace(/\.git$/, '').toLowerCase();
+      }
+      const isOwnerRepo = /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(q);
+      list = list.filter(r => {
+        const fullName = (r.full_name || '').toLowerCase();
+        const name = (r.manifest_name || r.name || '').toLowerCase();
+        const authors = (r.authors || []).join(',').toLowerCase();
+        if (name.includes(q) || fullName.includes(q) || authors.includes(q)) return true;
+        if (extractedPath && fullName.includes(extractedPath)) return true;
+        if (isOwnerRepo && fullName.includes(q)) return true;
+        return false;
+      });
+    }
+    return list;
+  }
+
+  _clearSearch() {
+    this._searchText = '';
+    this.search = '';
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+  }
+
+  _openDetail(repo) {
+    this.dispatchEvent(new CustomEvent('detail', { detail: { repo }, bubbles: true, composed: true }));
+  }
+
+  async _toggleFav(repo) {
+    const repoId = repo.full_name || repo.id;
+    const isFav = !!this._favs[repoId];
+    const prevFavs = this._favs;
+    const newFavs = { ...this._favs };
+    if (isFav) { delete newFavs[repoId]; } else { newFavs[repoId] = true; }
+    this._favs = newFavs;
+    try {
+      const ids = Object.keys(newFavs);
+      await api.setFavorites(ids);
+    } catch(e) {
+      this._favs = prevFavs; // revert optimistic update
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  _setViewMode(mode) {
+    this._viewMode = mode;
+    try { localStorage.setItem('hacs_vision_view_mode', mode); } catch {}
+  }
+
+  _renderListTable(filtered) {
+    return html`
+      <table class="list-table">
+        <thead>
+          <tr>
+            <th class="col-icon"></th>
+            <th>${t('colName') }</th>
+            <th>${t('currentVersion')}</th>
+            <th>${t('latestVersion')}</th>
+            <th>${t('colStatus') }</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(r => this._renderListRow(r))}
+        </tbody>
+      </table>
+    `;
+  }
+
+  _renderListRow(r) {
+    const repoId = r.id || r.full_name;
+    const isInstalling = !!this._installingIds?.[repoId];
+    const isChecked = !!this._selectedIds[repoId];
+    const name = r.manifest_name || r.name || r.full_name || '?';
+    const catColor = getCategoryColor(r.category);
+    const domain = r.domain;
+
+    return html`
+      <tr @click=${(e) => { if (e.target.closest('.btn') || e.target.closest('a') || e.target.closest('.checkbox')) return; this._openDetail(r); }}>
+        <td class="col-icon">
+          <div class="icon-cell" style="background:${catColor}">
+            ${domain && r.category === 'integration'
+              ? html`
+                <img src="https://brands.home-assistant.io/${domain}/icon.png" style="width:100%;height:100%;object-fit:cover;" @error=${e => { e.target.style.display='none'; e.target.nextElementSibling.style.display='flex'; }}>
+                <span style="display:none">${name.charAt(0).toUpperCase()}</span>
+              `
+              : name.charAt(0).toUpperCase()
+            }
+          </div>
+        </td>
+        <td>
+          <div class="name-cell">${name}</div>
+          ${r.description ? html`<div class="desc-cell">${r.description}</div>` : ''}
+          ${r.is_custom ? html`<span class="custom-tag-list">${t('customBadge')}</span>` : ''}
+          ${r.topics && r.topics.length ? html`<div class="topic-chips">${r.topics.slice(0, 4).map(t => html`<span class="topic-chip">${t}</span>`)}</div>` : ''}
+        </td>
+        <td style="font-size:12px;color:var(--warning-color);white-space:nowrap;">${r.installed_version || '?'}</td>
+        <td style="font-size:12px;color:var(--success-color);white-space:nowrap;">${r.latest_version || '?'}</td>
+        <td><span class="status-badge pending-upgrade">${t('statusPendingUpgrade')}</span></td>
+        <td style="white-space:nowrap;">
+          <input type="checkbox" class="checkbox" .checked=${isChecked}
+                 @click=${(e) => e.stopPropagation()}
+                 @change=${() => this._toggleSelect(repoId)} style="margin-right:6px;">
+          <button class="btn primary ${isInstalling ? 'installing' : ''}" style="padding:4px 10px;font-size:11px;"
+                  @click=${(e) => { e.stopPropagation(); this._updateOne(r); }} ?disabled=${isInstalling || this.updating}>
+            ${isInstalling
+              ? html`<svg class="mini-icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`
+              : html`<svg class="mini-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> ${t('updateNow')}`}
+          </button>
+          <button class="btn" style="padding:4px 8px;font-size:11px;margin-left:4px;${this._isAutoUpdate(r) ? 'background:rgba(76,175,80,0.12);border-color:#4caf50;color:#4caf50;' : 'color:var(--secondary-text-color);'}"
+                  @click=${(e) => { e.stopPropagation(); this._handleAutoUpdateToggle(r); }}
+                  title="${this._isAutoUpdate(r) ? (t('autoUpdateEnabledText') || 'ON') : (t('autoUpdateDisabledText') || 'OFF')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;vertical-align:middle;margin-right:2px;">
+              <path d="M1 4v6h6"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+          </button>
+          <button class="btn" style="padding:4px 8px;font-size:11px;margin-left:4px;color:var(--secondary-text-color);"
+                  @click=${(e) => { e.stopPropagation(); this._skipVersion(r); }}>
+            🔕 ${t('ignoreVersion')}
+          </button>
+        </td>
+      </tr>
+    `;
+  }
+
+  render() {
+    const filtered = this._getFiltered();
+
+    return html`
+      <div class="controls">
+        <!-- 刷新进度条 -->
+        ${this.refreshing ? html`
+          <div style="position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--card-background-color,#fff);border-bottom:1px solid var(--divider-color);padding:10px 16px;display:flex;align-items:center;gap:10px;">
+            <svg class="mini-icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+            <span style="font-size:13px;color:var(--primary-text-color);flex:1;">${this._updateProgress?.currentName || t('checkingUpdates') }</span>
+            <div style="width:120px;height:6px;background:var(--divider-color);border-radius:3px;overflow:hidden;">
+              <div class="progress-fill" style="width:100%;animation:pulse 1.5s ease-in-out infinite;"></div>
+            </div>
+          </div>
+        ` : ''}
+        <button class="filter-toggle-sm" @click=${() => { this._filterExpanded = !this._filterExpanded; }} title="${t('filterMore') }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="12" y1="18" x2="20" y2="18"/></svg>
+        </button>
+        <div class="search">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input type="text" autocomplete="off" placeholder="${t('searchUpdates')}" .value=${this._searchText || ''}
+                 @input=${e => {
+                   this._searchText = e.target.value;
+                   clearTimeout(this._searchTimer);
+                   this._searchTimer = setTimeout(() => { this.search = this._searchText; }, 300);
+                 }}>
+          ${this.search ? html`
+            <button class="search-clear" @click=${this._clearSearch}>✕</button>
+          ` : ''}
+        </div>
+        <div class="controls-right">
+          <button class="refresh-btn ${this.refreshing ? 'spinning' : ''}" @click=${this._refresh} ?disabled=${this.refreshing} title="${t('refreshTitle')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          </button>
+          <button class="view-toggle-btn" @click=${() => this._setViewMode(this._viewMode === 'card' ? 'list' : 'card')} title="${this._viewMode === 'card' ? t('viewList') : t('viewCard')}">
+            ${this._viewMode === 'card' ? html`
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            ` : html`
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            `}
+          </button>
+          ${this.updates.length > 0 ? html`
+            <button class="update-all-btn" @click=${this._updateAll} ?disabled=${this.updating || this.updates.length === 0}>
+              <svg class="mini-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> ${this.updating ? t('updatingProgress') : t('updateAllNow')}
+            </button>
+          ` : ''}
+          <label class="sel-all-label desktop-only">
+            <input type="checkbox" class="checkbox-sm" .checked=${this._isAllSelected()}
+                   @click=${e => e.stopPropagation()} @change=${this._toggleSelectAll}>
+            ${t('selectAll') }
+            ${this._selectedCount() > 0 ? html`<span style="color:var(--primary-color);font-weight:600;">(${this._selectedCount()})</span>` : ''}
+          </label>
+        </div>
+      </div>
+
+      ${(() => {
+        const cats = ['all','integration','plugin','theme','template'];
+        const counts = {};
+        for (const c of cats) counts[c] = c === 'all' ? this.updates.length : this.updates.filter(r => (r.category || 'integration') === c).length;
+        return html`
+        <div class="filter-bar ${this._filterExpanded ? 'expanded' : ''}">
+          <div class="fs-chips">
+          ${cats.map(c => html`
+            <button class="chip ${this._categoryFilter === c ? 'chip-active' : ''}"
+              @click=${() => { this._categoryFilter = c; }}>
+              ${c === 'all' ? t('filterAll') : c === 'integration' ? t('catIntegration') : c === 'plugin' ? t('catPlugin') : c === 'theme' ? t('catTheme') : t('catTemplate')}
+              <span class="chip-count">${counts[c]}</span>
+            </button>
+          `)}
+          </div>
+          <div class="fs-actions">
+            ${this._skippedVersions && this._skippedVersions.length > 0 ? html`
+              <button class="chip" @click=${() => { this._showSkipped = !this._showSkipped; this.requestUpdate(); }}>
+                🔇 ${this._showSkipped ? t('hideSkipped') : t('showSkipped')} (${this._skippedVersions.length})
+              </button>
+            ` : ''}
+            ${this._selectedCount() > 0 ? html`
+              <button class="update-all-btn selected-btn" @click=${this._updateSelected} ?disabled=${this.updating || this._selectedCount() === 0}>
+                <svg class="mini-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg> ${t('updateSelected')} (${this._selectedCount() || 0})
+              </button>
+            ` : ''}
+            <label class="sel-all-label">
+              <input type="checkbox" class="checkbox-sm" .checked=${this._isAllSelected()}
+                     @click=${e => e.stopPropagation()} @change=${this._toggleSelectAll}>
+              ${t('selectAll') }
+              ${this._selectedCount() > 0 ? html`<span style="color:var(--primary-color);font-weight:600;">(${this._selectedCount()})</span>` : ''}
+            </label>
+          </div>
+        </div>`;
+      })()}
+
+      ${this._updateProgress ? html`
+        <div class="update-progress">
+          <div class="progress-track">
+            <div class="progress-fill" style="width:${(this._updateProgress.current / this._updateProgress.total) * 100}%"></div>
+          </div>
+          <span class="progress-label">${t('updatingProgress')} ${this._updateProgress.current}/${this._updateProgress.total} — ${this._updateProgress.currentName}</span>
+        </div>
+      ` : ''}
+
+      ${this.loading ? html`
+        <div class="skeleton-grid">
+          ${[1,2,3,4,5,6].map(() => html`
+            <div class="skeleton-card">
+              <div class="skeleton-card-img"></div>
+              <div class="skeleton-card-body">
+                <div class="skeleton-line wide"></div>
+                <div class="skeleton-line medium"></div>
+                <div class="skeleton-line" style="width:50%"></div>
+              </div>
+            </div>
+          `)}
+        </div>
+      ` : html`
+
+        <div class="section-header" @click=${() => { this._showUpdatable = !this._showUpdatable; this.requestUpdate(); }}
+             style="margin-bottom:${this._showUpdatable ? '6px' : '16px'};">
+          <span class="section-header-icon ${this._showUpdatable ? 'expanded' : ''}">▶</span>
+          <span class="section-header-label">${t('sectionUpdatable')}</span>
+          <span class="section-header-count">${this.updates.length}</span>
+        </div>
+
+        ${this._showUpdatable ? html`
+
+          ${this._selectedCount() > 0 ? html`
+            <div class="batch-bar" style="margin-bottom:10px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              <span style="font-weight:600;">${t('selected')}: ${this._selectedCount()}</span>
+              <div class="batch-actions">
+                <button class="batch-bar-btn" @click=${this._updateSelected} ?disabled=${this.updating}>${t('batchUpdate')}</button>
+                <button class="batch-bar-btn" style="color:var(--warning-color,#ff9800);border-color:var(--warning-color,#ff9800);" @click=${this._skipSelected} ?disabled=${this.updating}>🔕 ${t('batchSkip')}</button>
+                <button class="batch-bar-btn danger" @click=${() => this._batchDo('remove')} ?disabled=${this.updating}>${t('batchRemove')}</button>
+                <button class="batch-bar-btn" style="background:transparent;border-color:transparent;font-size:14px;" @click=${() => { this._selectedIds = {}; this.requestUpdate(); }}>✕</button>
+              </div>
+            </div>
+          ` : ''}
+
+          ${this._batchMode && this._selectedRepos.length > 0 ? html`
+            <div class="batch-bar">
+              <span>${t('batchSelected', { n: this._selectedRepos.length })}</span>
+              <button class="batch-bar-btn" @click=${() => this._batchDo('update')}>${t('batchUpdate')}</button>
+              <button class="batch-bar-btn danger" @click=${() => this._batchDo('remove')}>${t('batchRemove')}</button>
+              <button class="batch-bar-btn" @click=${() => { this._selectedRepos = []; this._batchMode = false; }}>${t('cancel')}</button>
+            </div>
+          ` : ''}
+
+          ${filtered.length === 0 ? html`
+            <div class="empty" style="margin-bottom:16px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+              <div>${t('allUpToDate')}</div>
+            </div>
+          ` : this._viewMode === 'list' ? html`
+            <div class="list-view" style="margin-bottom:16px;">${this._renderListTable(filtered)}</div>
+          ` : html`
+            <div class="grid" style="margin-bottom:16px;">
+              ${filtered.map(r => {
+                const repoId = r.id || r.full_name;
+                const isInstalling = !!this._installingIds?.[repoId];
+                const changelog = this._changelogs?.[r.full_name];
+                const isChecked = !!this._selectedIds[repoId];
+                return html`
+                <div class="card" @click=${(e) => { if (e.target.closest('.action-btn') || e.target.closest('a') || e.target.closest('.checkbox') || e.target.closest('.fav-btn')) return; this._openDetail(r); }}>
+                  <div class="img-container">
+                    <div class="top-bar">
+                      <input type="checkbox" class="checkbox" .checked=${isChecked}
+                             @click=${(e) => e.stopPropagation()}
+                             @change=${() => this._toggleSelect(repoId)}>
+                      <span class="badge-corner ${r.category || 'integration'}">${t('cat' + (r.category || 'integration').charAt(0).toUpperCase() + (r.category || 'integration').slice(1))}</span>
+                    </div>
+                    <div class="avatar">
+                      ${(() => {
+                        const urls = [];
+                        if (r.domain && r.category === 'integration') urls.push('https://brands.home-assistant.io/' + r.domain + '/icon.png');
+                        if (r.full_name) { const o = r.full_name.split('/')[0]; if (o) urls.push('https://github.com/' + o + '.png'); }
+                        const catColor = getCategoryColor(r.category);
+                        if (urls.length > 0) {
+                          return html`
+                            <img src="${urls[0]}" alt=""
+                              @error=${function() {
+                                this.style.display = 'none';
+                                const el = this.parentElement?.querySelector('.initials');
+                                if (el) { el.style.display = 'flex'; el.style.background = catColor; }
+                              }}>
+                            <span class="initials" style="display:none">${(r.name || r.full_name || '?').charAt(0).toUpperCase()}</span>
+                          `;
+                        }
+                        return html`<span class="initials" style="display:flex;background:${catColor}">${(r.name || r.full_name || '?').charAt(0).toUpperCase()}</span>`;
+                      })()}
+                    </div>
+                    <span class="status-badge-update">${t('statusPendingUpgrade')}</span>
+                    <button class="fav-btn ${this._favs?.[r.id || r.full_name] ? 'active' : ''}"
+                      @click=${(e) => { e.stopPropagation(); this._toggleFav(r); }}
+                      title=${this._favs?.[r.id || r.full_name] ? (t('favOn') ) : (t('favOff') )}>
+                      <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="card-body">
+                    <div class="card-name" title="${r.name || r.full_name}">${r.name || r.full_name}</div>
+                    <div class="version-row">
+                      <div class="version-item">
+                        <div class="version-label">${t('currentVersion')}</div>
+                        <div class="version-value old">${r.installed_version || '?'}</div>
+                      </div>
+                      <div class="version-item">
+                        <div class="version-label">${t('latestVersion')}</div>
+                        <div class="version-value new">${r.latest_version || '?'}</div>
+                      </div>
+                    </div>
+                    <div class="card-desc">${r.description || ''}</div>
+                    ${changelog?.body ? html`
+                      <div class="changelog-preview">
+                        <div class="changelog-preview-title">${t('changelogTitle')} ${changelog.tag ? html`<small>(${changelog.tag})</small>` : ''}</div>
+                        <div class="changelog-preview-body${this._expandedChangelogs?.[r.full_name] ? ' expanded' : ''}">${changelog.body}</div>
+                        <div>
+                          <button class="changelog-expand-btn" @click=${() => this._toggleChangelog(r.full_name)}>${this._expandedChangelogs?.[r.full_name] ? t('changelogShowLess') : t('changelogShowMore')}</button>
+                          <a class="changelog-preview-link" href="${changelog.url || `https://github.com/${r.full_name}/releases`}" target="_blank" rel="noopener">${t('viewFullChangelog')} →</a>
+                        </div>
+                      </div>
+                    ` : ''}
+                  <div class="au-toggle-row">
+                    <span class="au-label">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 4v6h6"/>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                      </svg>
+                      ${t('autoUpdateSection')}
+                    </span>
+                    <label class="au-toggle" @click=${(e) => e.stopPropagation()}>
+                      <input type="checkbox" .checked=${this._isAutoUpdate(r)}
+                        @change=${() => this._handleAutoUpdateToggle(r)}>
+                      <span class="slider"></span>
+                    </label>
+                  </div>
+                  </div>
+                  <div class="actions">
+                    ${r.pending_restart ? html`
+                      <button class="action-btn primary" @click=${(e) => { e.stopPropagation(); this.dispatchEvent(new CustomEvent('restart-ha', { bubbles: true, composed: true })); }}
+                        style="flex:1;background:var(--primary-color,#03a9f4);color:#fff;border-color:var(--primary-color,#03a9f4);">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+                        ${t('pendingRestart')}
+                      </button>
+                    ` : html`
+                    ${isInstalling ? html`
+                      <div class="card-install-progress" @click=${(e) => e.stopPropagation()}>
+                        <div class="card-install-progress-track">
+                          <div class="card-install-progress-fill" style="width:${(this._installingIds[repoId]?.percentage || 0)}%"></div>
+                        </div>
+                        <span class="card-install-progress-label">${this._installingIds[repoId]?.percentage || 0}%</span>
+                      </div>
+                      <button class="action-btn" @click=${() => this._skipVersion(r)}
+                        style="color:var(--secondary-text-color);font-size:12px;min-width:auto;padding:8px 10px;" ?disabled=${true}>
+                        🔕 ${t('ignoreVersion')}
+                      </button>
+                    ` : html`
+                    <button class="action-btn primary"
+                      @click=${() => this._updateOne(r)} ?disabled=${isInstalling || this.updating}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> ${t('updateNow')}
+                    </button>
+                    <button class="action-btn" @click=${() => this._skipVersion(r)}
+                      style="color:var(--secondary-text-color);font-size:12px;min-width:auto;padding:8px 10px;">
+                      🔕 ${t('ignoreVersion')}
+                    </button>
+                    `}
+                    `}
+                  </div>
+                </div>
+              `;})}
+            </div>
+          `}
+
+        ` : ''}
+
+
+        <div class="section-header" @click=${() => { this._showUpdated = !this._showUpdated; this.requestUpdate(); }}
+             style="margin-bottom:${this._showUpdated ? '6px' : '16px'};">
+          <span class="section-header-icon ${this._showUpdated ? 'expanded' : ''}">▶</span>
+          <span class="section-header-label">${t('sectionUpdated')}</span>
+          <span class="section-header-count updated-count">${this._history.length}</span>
+        </div>
+
+        ${this._showUpdated ? html`
+          ${this._history.length === 0 ? html`
+            <div class="empty" style="margin-bottom:16px;">${t('noUpdateHistory')}</div>
+          ` : html`
+            <div class="history-grid" style="margin-bottom:16px;">
+              ${this._history.map(h => {
+                const initial = (h.full_name || '?').charAt(0).toUpperCase();
+                return html`
+                  <div class="history-card" @click=${() => { if (h.full_name) this._openDetail({ full_name: h.full_name }); }}>
+                    <div class="history-avatar">${initial}</div>
+                    <div class="history-body">
+                      <div class="history-name">${h.full_name || '?'}</div>
+                      <div class="history-meta">
+                        <span class="history-arrow">${t('updatedFromTo', { from: h.from_version || '?', to: h.to_version || '?' })}</span>
+                      </div>
+                    </div>
+                    <div class="history-time">${this._timeAgo(h.updated_at)}</div>
+                  </div>
+                `;
+              })}
+            </div>
+          `}
+        ` : ''}
+
+
+        ${this._skippedVersions && this._skippedVersions.length > 0 ? html`
+          <div class="section-header" @click=${() => { this._showSkipped = !this._showSkipped; this.requestUpdate(); }}
+               style="margin-bottom:${this._showSkipped ? '6px' : '0'};">
+            <span class="section-header-icon ${this._showSkipped ? 'expanded' : ''}">▶</span>
+            <span class="section-header-label">${t('sectionSkipped')}</span>
+            <span class="section-header-count skipped-count">${this._skippedVersions.length}</span>
+          </div>
+
+          ${this._showSkipped ? html`
+            <div class="grid" style="margin-bottom:16px;">
+              ${this._skippedVersions.map(sv => html`
+                <div class="card" style="opacity:0.75;">
+                  <div class="img-container">
+                    <div class="avatar" style="background:#9e9e9e;display:flex;align-items:center;justify-content:center;">
+                      <span class="initials">${(sv.full_name || '?').charAt(0).toUpperCase()}</span>
+                    </div>
+                    <span class="status-badge-update" style="background:rgba(158,158,158,0.85)">${t('skippedBadge')}</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="card-name">${sv.full_name || '?'}</div>
+                    <div class="version-row">
+                      <div class="version-item">
+                        <div class="version-label">${t('currentVersion')}</div>
+                        <div class="version-value old">${sv.installed_version || '?'}</div>
+                      </div>
+                      <div class="version-item">
+                        <div class="version-label">${t('skippedVersionTitle')}</div>
+                        <div class="version-value" style="color:#9e9e9e;text-decoration:line-through;">${sv.skipped_version || '?'}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="actions" style="justify-content:flex-end;">
+                    <button class="action-btn" @click=${() => this._unskipVersion(sv)}
+                      style="color:var(--primary-color);border-color:var(--primary-color);padding:8px 16px;">
+                      ${t('unskipBtn')}
+                    </button>
+                  </div>
+                </div>
+              `)}
+            </div>
+          ` : ''}
+        ` : ''}
+      `}
+    `;
+  }
+}
+
+if (!customElements.get('updates-view')) customElements.define('updates-view', UpdatesView);

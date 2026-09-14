@@ -1,0 +1,1522 @@
+import { LitElement, html, css } from 'lit';
+import '../components/repo-card.js';
+import { api } from '../api.js';
+import { showToast } from '../shared/toast.js';
+import { t } from '../i18n.js';
+import { getCommonStyles } from '../shared/styles.js';
+import { getCategoryColor } from '../shared/constants.js';
+import { ConfirmDialog } from '../shared/confirm-dialog.js';
+
+const BROWSE_STATE_KEY = 'hacs_vision_browse_state';
+const VIEW_MODE_KEY = 'hacs_vision_view_mode';
+
+function _loadBrowseState() {
+  try { return JSON.parse(localStorage.getItem(BROWSE_STATE_KEY) || '{}'); } catch { return {}; }
+}
+
+function _saveBrowseState(state) {
+  try { localStorage.setItem(BROWSE_STATE_KEY, JSON.stringify(state)); } catch {}
+}
+
+
+class BrowseView extends LitElement {
+  static properties = {
+    repos: { type: Array },
+    total: { type: Number },
+    search: { type: String },
+    category: { type: String },
+    statusFilter: { type: String },
+    sort: { type: String },
+    sortDir: { type: String },
+    page: { type: Number },
+    loading: { type: Boolean },
+    refreshing: { type: Boolean },
+    categoryCounts: { type: Object },
+    statusCounts: { type: Object },
+    tagCounts: { type: Object },
+    viewMode: { type: String },
+    groupBy: { type: String },
+    pageSize: { type: Number },
+    _installingIds: { type: Object, state: true },
+    _searchText: { type: String, state: true },
+    _addFromSearchCategory: { type: String, state: true },
+    _addFromSearchInstalling: { type: Boolean, state: true },
+    _collapsedGroups: { type: Object, state: true },
+    _filterExpanded: { type: Boolean, state: true },
+    _favorites: { type: Array, state: true },
+    presetFilter: { type: String },
+    presetTag: { type: String },
+    configEntries: { type: Object },
+    pendingRestart: { type: Number },
+    _selectedRepos: { type: Array, state: true },
+    _tagFilters: { type: Array, state: true },
+    _starredMap: { type: Object, state: true },
+    // Org repos for add repo form
+    _orgRepos: { type: Array, state: true },
+    _orgFilter: { type: String, state: true },
+    _selectedOrgRepos: { type: Object, state: true },
+    _orgLoading: { type: Boolean, state: true },
+    _orgSyncing: { type: Boolean, state: true },
+    _orgSyncResult: { type: String, state: true },
+    // Re-render trigger on language change
+    langVersion: { type: Number },
+    _autoUpdateRepos: { type: Array, state: true },
+  };
+
+  constructor() {
+    super();
+    const saved = _loadBrowseState();
+    this.repos = [];
+    this.total = 0;
+    this.search = saved.search || '';
+    this.category = saved.category || '';
+    this.statusFilter = saved.statusFilter || '';
+    this.sort = saved.sort || 'stars';
+    this.sortDir = saved.sortDir || 'desc';
+    this.page = saved.page || 1;
+    this.loading = false;
+    this.limit = saved.pageSize || 50;
+    this.pageSize = this.limit;
+    this.categoryCounts = {};
+    this.statusCounts = {};
+    this.tagCounts = {};
+    this._installingIds = {};
+    this._searchTimer = undefined;
+    this._searchText = saved.search || '';
+    this.viewMode = (() => { try { return localStorage.getItem(VIEW_MODE_KEY); } catch { return null; } })() || 'card';
+    this.groupBy = saved.groupBy || 'none';
+    this._addFromSearchCategory = 'integration';
+    this._addFromSearchInstalling = false;
+    this._collapsedGroups = {};
+    this._filterExpanded = false;
+    this._starredMap = {};
+    this._orgRepos = [];
+    this._orgFilter = '';
+    this._selectedOrgRepos = {};
+    this._orgLoading = false;
+    this._orgSyncing = false;
+    this._orgSyncResult = '';
+    this._orgSyncFailed = false;
+    this._orgLoadTimer = null;
+    this._favorites = [];
+    this._selectedRepos = [];
+    this._tagFilters = [];
+    this._autoUpdateRepos = [];
+    this.__auLoaded = false;
+    this._rebuildOptions();
+  }
+
+  static styles = css`
+    ${getCommonStyles()}
+
+    :host { display: block; touch-action: manipulation; background: var(--primary-background-color); }
+
+    .content-section {
+      background: var(--card-background-color, #fff);
+      border-radius: 0; padding: 14px;
+    }
+
+    /* ===== Controls Bar ===== */
+    .controls {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 14px;
+    }
+    .controls-right { flex-shrink: 0; }
+    .search input {
+      box-sizing: border-box;
+      border: 1px solid var(--divider-color); border-radius: 10px;
+      font-size: 14px; background: var(--card-background-color);
+      color: var(--primary-text-color); outline: none; transition: border-color 0.2s;
+    }
+    .refresh-btn {
+      padding: 8px; border: 1px solid var(--divider-color); border-radius: 10px;
+      background: var(--card-background-color); color: var(--primary-text-color);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.25s; width: 36px; height: 36px;
+      touch-action: manipulation; flex-shrink: 0;
+    }
+    .refresh-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+    .refresh-btn svg { width: 16px; height: 16px; }
+
+    /* ===== Sort Bar (both card and list mode) ===== */
+    .sort-bar {
+      display: flex; align-items: center;
+      margin-bottom: 10px; padding: 6px 14px; background: transparent;
+      border-radius: 8px; flex-wrap: wrap; gap: 4px;
+    }
+    .sort-chips {
+      display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+    }
+    .sort-chip {
+      padding: 4px 10px; border: 1px solid var(--divider-color); border-radius: 14px;
+      background: var(--card-background-color); color: var(--secondary-text-color);
+      cursor: pointer; font-size: 11px; transition: all 0.2s; white-space: nowrap;
+      touch-action: manipulation;
+    }
+    .sort-chip:hover { border-color: var(--primary-color); color: var(--primary-color); }
+    .sort-chip.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .sort-chip .sort-dir { font-size: 9px; margin-left: 2px; }
+
+    /* ===== View Mode Toggle ===== */
+    .view-toggle {
+      display: flex; border: 1px solid var(--divider-color); border-radius: 8px;
+      overflow: hidden; flex-shrink: 0;
+    }
+    .view-toggle-btn {
+      padding: 6px 10px; border: 1px solid var(--divider-color); border-radius: 10px;
+      background: var(--card-background-color);
+      color: var(--secondary-text-color); cursor: pointer; font-size: 14px;
+      transition: all 0.2s; min-width: 36px; min-height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      touch-action: manipulation;
+    }
+    .view-toggle-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+
+    /* ===== Group By Select ===== */
+    .group-select {
+      padding: 6px 10px; border: 1px solid var(--divider-color); border-radius: 8px;
+      background: var(--card-background-color); color: var(--primary-text-color);
+      font-size: 12px; cursor: pointer; outline: none; flex-shrink: 0;
+    }
+
+    /* ===== Filter-Sort Row (compact, merged) ===== */
+    .filter-sort-row {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 10px; padding: 8px 12px;
+      background: var(--secondary-background-color, #f5f5f5);
+      border-radius: 10px; flex-wrap: wrap;
+    }
+    .fs-chips {
+      display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0;
+    }
+    .fs-divider {
+      display: inline-block; width: 1px; height: 22px;
+      background: var(--divider-color, #e0e0e0); margin: 0 10px; flex-shrink: 0;
+    }
+    .fs-label {
+      font-size: 11px; font-weight: 700; color: var(--primary-color, #03a9f4);
+      text-transform: uppercase; letter-spacing: 0.5px; padding: 0 6px;
+      user-select: none; flex-shrink: 0;
+    }
+    .filter-toggle-sm {
+      display: none; width: 36px; height: 36px; flex-shrink: 0;
+      border: 1px solid var(--divider-color); border-radius: 10px;
+      background: var(--card-background-color); color: var(--secondary-text-color);
+      cursor: pointer; align-items: center; justify-content: center; padding: 0;
+      touch-action: manipulation;
+    }
+    .sort-inline { opacity: 0.85; }
+    .sort-inline.active { opacity: 1; }
+    .sort-inline .sort-dir { font-size: 9px; margin-left: 2px; }
+
+    .fs-actions { display: none; }
+
+    /* ===== Search box responsive ===== */
+    /* ===== Filter Groups ===== */
+    .filter-group { margin-bottom: 10px; }
+    .filter-label {
+      font-size: 11px; font-weight: 600; color: var(--secondary-text-color);
+      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
+    }
+    .filter-chips {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+    }
+    .filter-chips::-webkit-scrollbar { display: none; }
+    .filter-chip {
+      padding: 6px 12px; border: 1px solid var(--divider-color); border-radius: 18px;
+      background: var(--card-background-color); color: var(--secondary-text-color);
+      cursor: pointer; font-size: 12px; transition: all 0.25s; white-space: nowrap;
+      touch-action: manipulation;
+    }
+    .filter-chip:hover { border-color: var(--primary-color); color: var(--primary-color); }
+    .filter-chip.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .filter-chip .chip-count { font-size: 10px; opacity: 0.7; margin-left: 3px; }
+
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    /* ===== Add Custom Repo ===== */
+    .form-select {
+      padding: 10px 12px; border: 1px solid var(--divider-color); border-radius: 10px;
+      font-size: 13px; background: var(--card-background-color);
+      color: var(--primary-text-color); cursor: pointer; flex-shrink: 0;
+    }
+
+    /* ===== List View (HACS-style data table) ===== */
+    .list-view { width: 100%; overflow-x: auto; }
+    .list-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
+    .list-table th {
+      text-align: left; padding: 10px 8px; font-size: 11px; font-weight: 600;
+      color: var(--secondary-text-color); text-transform: uppercase;
+      border-bottom: 2px solid var(--divider-color); white-space: nowrap;
+      user-select: none; letter-spacing: 0.3px;
+    }
+    .list-table th.sortable { cursor: pointer; touch-action: manipulation; }
+    .list-table th.sortable:hover { color: var(--primary-color); }
+    .list-table th .sort-arrow { font-size: 9px; margin-left: 3px; opacity: 0.5; }
+    .list-table th.active-sort .sort-arrow { opacity: 1; color: var(--primary-color); }
+    .list-table td {
+      padding: 10px 8px; border-bottom: 1px solid var(--divider-color);
+      vertical-align: middle;
+    }
+    .list-table .name-cell,
+    .list-table .desc-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+    .list-table .name-cell { font-weight: 500; color: var(--primary-text-color); width: 100%; }
+    .list-table .desc-cell { font-size: 11px; color: var(--secondary-text-color); }
+    .custom-tag-list {
+      display: inline-block; margin-top: 4px;
+      font-size: 9px; padding: 1px 6px; border-radius: 4px;
+      background: #ff6f00; color: #fff; font-weight: 700;
+    }
+    .topic-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .topic-chip {
+      font-size: 9px; padding: 1px 6px; border-radius: 4px;
+      background: var(--secondary-background-color);
+      color: var(--secondary-text-color); border: 1px solid var(--divider-color);
+    }
+    .list-table tr { cursor: pointer; transition: background 0.15s; }
+    .list-table tbody tr:hover { background: var(--secondary-background-color); }
+
+    .list-table .col-icon { width: 40px; }
+    .list-table .icon-cell {
+      width: 32px; height: 32px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 14px; font-weight: 700;
+      overflow: hidden;
+    }
+    .list-table .num-cell { font-size: 12px; color: var(--secondary-text-color); text-align: right; }
+    .list-table .ver-cell { font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
+    .list-table .status-cell { font-size: 11px; }
+    .status-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+    }
+    .status-badge.installed { background: rgba(76,175,80,0.15); color: #4caf50; }
+    .status-badge.pending-upgrade { background: rgba(255,152,0,0.15); color: #ff9800; }
+    .status-badge.pending-restart { background: rgba(244,67,54,0.15); color: #f44336; }
+    .status-badge.new { background: rgba(33,150,243,0.15); color: #2196f3; }
+    .status-badge.default { background: rgba(158,158,158,0.1); color: #9e9e9e; }
+    .list-table .actions-cell { white-space: nowrap; }
+    .action-sm {
+      padding: 4px 8px; border-radius: 6px; font-size: 11px;
+      border: 1px solid var(--divider-color); background: var(--card-background-color);
+      color: var(--primary-text-color); cursor: pointer; transition: all 0.2s;
+      touch-action: manipulation;
+    }
+    .action-sm:hover { border-color: var(--primary-color); color: var(--primary-color); }
+    .action-sm.primary { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .action-sm.star-btn { padding: 4px 6px; min-width: 28px; display: inline-flex; align-items: center; justify-content: center; }
+    .action-sm.star-btn.starred { background: rgba(255,152,0,0.1); border-color: #ff9800; }
+
+    /* ===== Group Headers ===== */
+    .group-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; margin-top: 12px; margin-bottom: 4px;
+      background: var(--secondary-background-color, #f0f0f0);
+      border-radius: 8px; cursor: pointer; user-select: none;
+      font-size: 13px; font-weight: 600; color: var(--primary-text-color);
+      touch-action: manipulation;
+    }
+    .group-header:first-child { margin-top: 0; }
+    .group-header .group-arrow { transition: transform 0.2s; font-size: 10px; }
+    .group-header .group-arrow.collapsed { transform: rotate(-90deg); }
+    .group-header .group-count { font-size: 11px; color: var(--secondary-text-color); font-weight: 400; margin-left: 4px; }
+
+    /* ===== Pagination ===== */
+    .pagination {
+      display: flex; justify-content: center; align-items: center; gap: 12px;
+      margin-top: 24px; padding: 12px 0;
+    }
+    .page-btn {
+      padding: 8px 16px; border: 1px solid var(--divider-color); border-radius: 8px;
+      background: var(--card-background-color); color: var(--primary-text-color);
+      cursor: pointer; font-size: 13px; transition: all 0.2s; touch-action: manipulation;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--primary-color); color: var(--primary-color); }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .page-btn.primary { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .page-size-select {
+      padding: 6px 8px; border: 1px solid var(--divider-color); border-radius: 6px;
+      background: var(--card-background-color); color: var(--primary-text-color);
+      font-size: 13px; margin-left: 8px; cursor: pointer;
+    }
+    .page-info { font-size: 13px; color: var(--secondary-text-color); }
+
+    /* ===== Filter Toggle (mobile) ===== */
+    .filter-toggle {
+      display: none; width: 100%; padding: 10px 14px;
+      border: 1px solid var(--divider-color); border-radius: 10px;
+      background: var(--card-background-color); color: var(--primary-text-color);
+      cursor: pointer; font-size: 13px; margin-bottom: 8px;
+      justify-content: space-between; align-items: center;
+      touch-action: manipulation;
+    }
+    .filter-toggle .toggle-arrow { transition: transform 0.2s; font-size: 10px; }
+    .filter-toggle .toggle-arrow.expanded { transform: rotate(180deg); }
+    .filter-toggle .active-filters {
+      display: flex; gap: 4px; flex-wrap: wrap; margin-left: 8px;
+    }
+    .filter-toggle .active-filter-tag {
+      font-size: 10px; padding: 2px 6px; border-radius: 8px;
+      background: var(--primary-color); color: #fff;
+    }
+
+    /* ===== Responsive ===== */
+    @media (max-width: 768px) {
+      .controls { gap: 4px; margin-bottom: 0; flex-wrap: nowrap; }
+      .search { flex: 1; min-width: 0; height: 36px; box-sizing: border-box; border: 1px solid var(--divider-color); border-radius: 10px; }
+      .search input { padding: 7px 10px 7px 30px; font-size: 13px; border: none; background: transparent; height: 100%; }
+      .search-icon { left: 10px; }
+      .controls-right { flex-shrink: 0; }
+      .desktop-only { display: none; }
+      .filter-sort-row { padding: 6px 10px; flex-wrap: nowrap; overflow: hidden; }
+      .filter-sort-row .fs-chips { display: none; }
+      .filter-sort-row.expanded .fs-chips { display: flex; }
+      .filter-sort-row.expanded { flex-wrap: wrap; }
+      .filter-sort-row .fs-actions { display: none; }
+      .filter-sort-row.expanded .fs-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; }
+      .filter-toggle-sm { display: flex; }
+      .filter-row:not(.expanded) { display: none; }
+      .filter-row.expanded { display: flex; }
+      .filter-row { flex-direction: column; gap: 8px; }
+      .filter-row .filter-group { margin-bottom: 0; }
+      .filter-chips { flex-wrap: wrap; gap: 3px; }
+      .filter-chip { padding: 4px 8px; font-size: 11px; }
+      .chip-count { min-width: 16px; height: 16px; font-size: 10px; }
+      .page-btn { min-height: 44px; }
+      .list-table .col-downloads,
+      .list-table .col-stars,
+      .list-table .col-installed-ver,
+      .list-table .col-available-ver,
+      .list-table .col-installed-at { display: none; }
+    }
+
+    @media (max-width: 480px) {
+      .controls-right { gap: 4px; }
+      .filter-chips { gap: 4px; }
+      .filter-chip { padding: 4px 8px; font-size: 10px; }
+      .filter-label { font-size: 10px; margin-bottom: 4px; }
+      .list-table .col-last-updated,
+      .list-table .col-status { display: none; }
+      .form-select { width: 100%; box-sizing: border-box; }
+    }
+
+    .batch-bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 12px; margin: 6px 0;
+      background: var(--primary-color, #03a9f4); color: #fff;
+      border-radius: 8px; font-size: 13px; font-weight: 600;
+    }
+    .batch-bar-btn {
+      padding: 4px 12px; border-radius: 4px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.2); color: #fff;
+      border: 1px solid rgba(255,255,255,0.4); cursor: pointer;
+    }
+    .batch-bar-btn:hover { background: rgba(255,255,255,0.35); }
+    .batch-bar-btn.danger { border-color: #ff5252; color: #ff5252; }
+  `;
+
+  async connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('hacs-lang-changed', this._boundLangRefresh);
+    await this._loadFavorites();
+    await this._load();
+    // Load auto-update whitelist (only once)
+    if (!this.__auLoaded) {
+      this._loadAutoUpdateSettings();
+      this.__auLoaded = true;
+    }
+    // After repos loaded, silently sync GitHub stars → local favorites (only known repos)
+    this._syncGitHubStarsToFavs();
+    this.addEventListener('install', (e) => this._handleInstall(e.detail.repo));
+    this.addEventListener('update', (e) => this._handleUpdate(e.detail.repo));
+    this.addEventListener('uninstall', (e) => this._handleUninstall(e.detail.repo));
+    this.addEventListener('redownload', (e) => this._handleRedownload(e.detail.repo));
+    this.addEventListener('ignore', (e) => this._handleIgnore(e.detail.repo));
+    // Card 'detail' events bubble directly to hacs-vision-panel (composed:true)
+    this.addEventListener('configure', (e) => this._handleConfigure(e.detail.repo));
+    this.addEventListener('add-integration', (e) => this._handleAddIntegration(e.detail.repo));
+    this.addEventListener('star-changed', (e) => {
+      const { repo, starred } = e.detail;
+      if (!repo?.full_name) return;
+      this._starredMap = { ...this._starredMap, [repo.full_name]: starred };
+      // Sync _favorites to match merged star state
+      const repoId = String(repo.id || repo.full_name);
+      if (starred && !this._favorites.includes(repoId) && !this._favorites.includes(repo.full_name)) {
+        this._favorites = [...this._favorites, repoId];
+      } else if (!starred) {
+        this._favorites = this._favorites.filter(id => id !== repoId && id !== repo.full_name);
+      }
+      // Update header count
+      this.tagCounts = { ...this.tagCounts, favorites: this._favorites.length };
+      try {
+        const panel = document.querySelector('hacs-vision-panel');
+        if (panel) { panel._favoriteCount = this._favorites.length; panel.requestUpdate(); }
+      } catch(e) {}
+    });
+    this.addEventListener('favorite', (e) => {
+      // Update local favorites list from card's toggle result (no extra API call)
+      const { isFavorite, repo } = e.detail;
+      const repoId = repo?.id || repo?.full_name;
+      if (repoId) {
+        if (isFavorite && !this._favorites.includes(repoId)) {
+          this._favorites = [...this._favorites, repoId];
+        } else if (!isFavorite) {
+          this._favorites = this._favorites.filter(id => id !== repoId);
+        }
+      }
+      this._syncFavoriteCount();
+    });
+    this.addEventListener('auto-update-toggle', (e) => this._handleAutoUpdateToggle(e.detail.repo));
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('hacs-lang-changed', this._boundLangRefresh);
+  }
+
+  _boundLangRefresh = () => { this._rebuildOptions(); this.requestUpdate(); };
+
+  /** Rebuild translated option arrays when language changes. */
+  _rebuildOptions() {
+    this.statusOptions = [
+      { value: '', label: t('statusAll') },
+      { value: 'installed', label: t('statusInstalled') },
+      { value: 'not_installed', label: t('statusNotInstalled') },
+      { value: 'update_available', label: t('statusPendingUpgrade') },
+      { value: 'pending_restart', label: t('statusPendingRestart') },
+    ];
+    this.typeOptions = [
+      { value: '', label: t('typeAll') },
+      { value: 'integration', label: t('typeIntegration') },
+      { value: 'plugin', label: t('typePlugin') },
+      { value: 'theme', label: t('typeTheme') },
+      { value: 'template', label: t('typeTemplate') },
+    ];
+    this.groupOptions = [
+      { value: 'none', label: t('groupNone') },
+      { value: 'status', label: t('groupStatus') },
+      { value: 'type', label: t('groupType') },
+    ];
+    this.sortColumns = [
+      { key: 'name', label: t('colName'), colName: true },
+      { key: 'downloads', label: t('colDownloads'), colDownloads: true },
+      { key: 'stars', label: t('colStars'), colStars: true },
+      { key: 'last_updated', label: t('colLastUpdated'), colLastUpdated: true },
+      { key: 'installed_version', label: t('colInstalledVer'), colInstalledVer: true },
+      { key: 'latest_version', label: t('colAvailableVer'), colAvailableVer: true },
+      { key: 'installed_at', label: t('colInstalledAt'), colInstalledAt: true },
+      { key: 'status', label: t('colStatus'), colStatus: true },
+    ];
+  }
+
+  willUpdate(changedProps) {
+    if (changedProps.has('presetFilter')) {
+      const filter = this.presetFilter;
+      const old = changedProps.get('presetFilter');
+      if (old === undefined && filter === '') return;
+      this.presetFilter = '';
+      this.statusFilter = filter;
+      this.page = 1;
+      this._persistState();
+      this._load();
+    }
+    if (changedProps.has('presetTag') && this.presetTag) {
+      const tag = this.presetTag;
+      this.presetTag = '';
+      this._tagFilters = this._tagFilters.includes(tag) ? [] : [tag];
+      this.page = 1;
+      this._load();
+    }
+  }
+
+  async _loadFavorites() {
+    try {
+      const result = await api.getFavorites();
+      this._favorites = Array.isArray(result) ? result : (result.favorites || []);
+    } catch(e) {
+      this._favorites = [];
+    }
+  }
+
+  async _syncGitHubStarsToFavs() {
+    // Backend-driven sync; one call does token check + list starred + cross-reference + save
+    try {
+      const result = await api.syncStarsToFavorites();
+      if (!result || result.added?.length > 0) {
+        // Reload favorites and refresh UI
+        await this._loadFavorites();
+        this.tagCounts = { ...this.tagCounts, favorites: this._favorites.length };
+        try {
+          const panel = document.querySelector('hacs-vision-panel');
+          if (panel) { panel._favoriteCount = this._favorites.length; panel.requestUpdate(); }
+        } catch(e) {}
+        if (this._activeTag === 'favorites' || this._tagFilters?.includes('favorites')) {
+          await this._load();
+        } else {
+          this.requestUpdate();
+        }
+      }
+    } catch(e) { /* silent — no token or network error */ }
+  }
+
+  _syncFavoriteCount() {
+    this.requestUpdate();
+  }
+
+  _persistState() {
+    _saveBrowseState({
+      search: this.search, category: this.category, statusFilter: this.statusFilter,
+      sort: this.sort, sortDir: this.sortDir, page: this.page, groupBy: this.groupBy,
+      pageSize: this.pageSize,
+    });
+  }
+
+  async _toggleStar(repo) {
+    const fullName = repo.full_name;
+    const repoId = fullName;  // Always use full_name for favorites (compatible with GitHub Star API)
+    if (!fullName) return;
+    const currently = this._starredMap?.[fullName];
+
+    // 1. Toggle display + update count immediately
+    const newState = !currently;
+    this._starredMap = { ...this._starredMap, [fullName]: newState };
+    if (newState) {
+      repo.stars = (repo.stars || repo.stargazers_count || 0) + 1;
+    } else {
+      repo.stars = Math.max(0, (repo.stars || repo.stargazers_count || 0) - 1);
+    }
+    this.requestUpdate();
+
+    // 2. Parallel: GitHub(后端自己判断Token) + 本地收藏
+    try {
+      const starOp = newState ? api.starRepo(fullName) : api.unstarRepo(fullName);
+      const [favsResp] = await Promise.allSettled([api.getFavorites(), starOp]);
+      const favsResult = favsResp.status === 'fulfilled' ? favsResp.value : { favorites: [] };
+      const favs = Array.isArray(favsResult) ? [...favsResult] : [...(favsResult?.favorites || [])];
+      if (newState) {
+        if (!favs.includes(repoId)) favs.push(repoId);
+      } else {
+        const idx = favs.indexOf(repoId);
+        if (idx >= 0) favs.splice(idx, 1);
+      }
+      await api.setFavorites(favs);
+      this._favorites = favs;
+    } catch(e) { /* ignore */ }
+
+    // 3. Sync counts
+    this.tagCounts = { ...this.tagCounts, favorites: this._favorites.length };
+    try {
+      const panel = document.querySelector('hacs-vision-panel');
+      if (panel) { panel._favoriteCount = this._favorites.length; panel.requestUpdate(); }
+    } catch(e) {}
+  }
+
+  async _batchLoadStarStatus() {
+    // Build starred map from local favorites, replacing any stale entries
+    const repos = this.repos || [];
+    const newMap = {};
+    for (const r of repos) {
+      if (r?.full_name) {
+        newMap[r.full_name] = this._favorites.includes(String(r.id))
+          || this._favorites.includes(r.full_name);
+      }
+    }
+    this._starredMap = newMap;
+  }
+
+  async _handleInstall(repo) {
+    const repoId = repo.id || repo.full_name;
+    this._installingIds = { ...this._installingIds, [repoId]: true };
+    try {
+      await api.install(repoId, repo.category);
+      showToast(`${t('installComplete')}: ${repo.full_name || repo.name}`, 'success');
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      this._load();
+      this._showPostInstallPrompt(repo);
+    } catch(e) {
+      showToast(`${t('installFailed')}: ${e.message}`, 'error');
+    }
+    const next = { ...this._installingIds };
+    delete next[repoId];
+    this._installingIds = next;
+  }
+
+  async _showPostInstallPrompt(repo) {
+    const category = repo.category || 'integration';
+    const needsRestart = category === 'integration';
+    // Wait a moment for toast to show first
+    await new Promise(r => setTimeout(r, 1500));
+    const { ConfirmDialog } = await import('../shared/confirm-dialog.js');
+    if (needsRestart) {
+      // Integrations: must restart first, then configure
+      const ok = await ConfirmDialog.show(this, {
+        message: `${repo.manifest_name || repo.name} ${t('postInstallRestartMsg')}`,
+        confirmText: t('restartHA'),
+        cancelText: t('later'),
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api.restartHA();
+        showToast(t('haRestarting'), 'info');
+      } catch(e) {
+        showToast(`${t('restartFailed')}: ${e.message}`, 'error');
+      }
+    } else {
+      // Plugins/themes: auto-reload directly, no prompt needed
+      showToast(t('reloadingHA'), 'info');
+      try {
+        const result = await api.reloadHA();
+        if (result.success) {
+          showToast(t('reloadSuccess'), 'success');
+        } else {
+          showToast(`${t('coreReloadFailed')}: ${result.error}`, 'error');
+        }
+      } catch(e) {
+        showToast(`${t('coreReloadFailed')}: ${e.message}`, 'error');
+      }
+    }
+  }
+
+  async _handleUpdate(repo) {
+    try {
+      const result = await api.update([repo.id || repo.full_name]);
+      if (result?.success?.length > 0) {
+        showToast(`${t('updateComplete')}: ${repo.full_name || repo.name}`, 'success');
+      } else {
+        showToast(`${t('updateFailed')}: ${repo.full_name || repo.name}`, 'error');
+      }
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      this._load();
+      // Show restart/reload prompt after update too
+      this._showPostInstallPrompt(repo);
+    } catch(e) {
+      console.error('Update failed', e);
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _handleRedownload(repo) {
+    try {
+      const result = await api.redownload(repo.id || repo.full_name, repo.category);
+      if (result?.success) {
+        showToast(`${t('redownload')}: ${repo.full_name || repo.name}`, 'success');
+      } else {
+        showToast(`${t('updateFailed')}: ${result?.error || repo.full_name}`, 'error');
+      }
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      this._load();
+    } catch(e) {
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _handleIgnore(repo) {
+    const ok = await ConfirmDialog.show(this, {
+      message: t('confirmIgnore', { repo: repo.full_name || repo.name }),
+      confirmText: t('ignore'), danger: false,
+    });
+    if (!ok) return;
+    try {
+      await api.ignoreRepo(repo.id || repo.full_name);
+      showToast(`${t('ignore')}: ${repo.full_name || repo.name}`, 'success');
+      this._load();
+    } catch(e) {
+      showToast(`${t('updateFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _loadAutoUpdateSettings() {
+    try {
+      const settings = await api.getSettings();
+      this._autoUpdateRepos = settings?.auto_update_repos || [];
+    } catch(e) {
+      console.debug('Failed to load auto-update settings:', e);
+      this._autoUpdateRepos = [];
+    }
+  }
+
+  async _handleAutoUpdateToggle(repo) {
+    const fullName = repo?.full_name;
+    if (!fullName) return;
+
+    // Optimistic update: toggle immediately
+    const prevRepos = [...this._autoUpdateRepos];
+    const newRepos = [...this._autoUpdateRepos];
+    const idx = newRepos.indexOf(fullName);
+    if (idx >= 0) {
+      newRepos.splice(idx, 1);
+    } else {
+      newRepos.push(fullName);
+    }
+    this._autoUpdateRepos = newRepos;
+
+    try {
+      await api.updateSettings({ auto_update_repos: newRepos });
+      await api.reloadAutoUpdateSettings();
+      showToast(fullName + (idx >= 0 ? t('autoUpdateToggledOff') : t('autoUpdateToggledOn')), 'success');
+    } catch(e) {
+      // Rollback on failure
+      this._autoUpdateRepos = prevRepos;
+      showToast(`${t('autoUpdateToggleFailed')}: ${e.message}`, 'error');
+    }
+  }
+
+  async _handleUninstall(repo) {
+    const ok = await ConfirmDialog.show(this, {
+      message: t('confirmRemove', { repo: repo.full_name || repo.name }),
+      confirmText: t('remove'), danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.remove(repo.id || repo.full_name);
+      this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      this._load();
+    } catch(e) { console.error('Uninstall failed', e); showToast(`${t('updateFailed')}: ${e.message}`, 'error'); }
+  }
+
+  _handleConfigure(repo) {
+    // Open options flow for an already-configured integration
+    const domain = repo.domain || (repo.full_name || '').split('/')[1] || '';
+    this.dispatchEvent(new CustomEvent('open-options-flow', { detail: { entryId: repo.config_entry_id, domain }, bubbles: true, composed: true }));
+  }
+
+  _handleAddIntegration(repo) {
+    // Open config flow for an installed-but-not-configured integration
+    const domain = repo.domain || (repo.full_name || '').split('/')[1] || '';
+    this.dispatchEvent(new CustomEvent('open-flow', { detail: { domain }, bubbles: true, composed: true }));
+  }
+
+  async _load() {
+    this.loading = true;
+    // Sequence guard: fast filters can race slow in-flight responses —
+    // discard anything that resolves after a newer request started.
+    const seq = (this._loadSeq = (this._loadSeq || 0) + 1);
+    try {
+      // Detect GitHub URL pattern: extract owner/repo for server-side search
+      const isUrlSearch = !!(this.search && (
+        this.search.match(/github\.com\/([^/]+\/[^/\s?#]+)/i) ||
+        this.search.match(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/)
+      ));
+      let serverSearch = this.search;
+      if (isUrlSearch) {
+        const match = this.search.match(/github\.com\/([^/]+\/[^/\s?#]+)/i);
+        if (match) {
+          serverSearch = match[1].replace(/\.git$/, '');
+        }
+      }
+      // Determine active tag filter — only one tag filter at a time
+      const activeTag = this._tagFilters.length === 1 ? this._tagFilters[0] : '';
+      const result = await api.listRepositories({
+        search: serverSearch,
+        category: this.category, sort: this.sort,
+        sortDir: this.sortDir, page: this.page, limit: this.limit,
+        status: this.statusFilter, tag: activeTag,
+      });
+      if (seq !== this._loadSeq) return; // a newer request superseded this one
+      this.repos = result.repositories || [];
+      this.total = result.total || 0;
+      // Clamp the page: data changes or a stale saved page could land past
+      // the last page, showing an empty list with no way forward.
+      {
+        const totalPages = Math.max(1, Math.ceil(this.total / this.limit));
+        if (this.page > totalPages) {
+          this.page = totalPages;
+          this._persistState();
+          this._load();
+          return;
+        }
+      }
+      this.categoryCounts = result.category_counts || {};
+      this.statusCounts = result.status_counts || {};
+      this.tagCounts = result.tag_counts || {};
+      // Compute favorites count from client
+      this.tagCounts = { ...this.tagCounts, favorites: this._favorites.length };
+      // When favorites filter active, server does the filtering; adjust total from server response
+      if (activeTag === 'favorites') {
+        this.total = this.repos.length;
+      }
+      // Batch load star status for all visible repos
+      this._batchLoadStarStatus();
+    } catch(e) {
+      console.error('Browse load error', e);
+      if (seq === this._loadSeq) {
+        // Keep the previously loaded list visible — blanking it makes a
+        // transient failure look like "no integrations exist".
+        showToast(t('loadFailedSimple'), 'error');
+      }
+    }
+    if (seq === this._loadSeq) this.loading = false;
+  }
+
+  _onSearch(e) {
+    this._searchText = e.target.value;
+    clearTimeout(this._searchTimer);
+    this._searchTimer = setTimeout(() => {
+      this.search = this._searchText; this.page = 1;
+      this._persistState(); this._load();
+      // If search is not a repo URL, try loading org repos
+      if (this.search.trim() && !this._parseRepoUrl(this.search)) {
+        clearTimeout(this._orgLoadTimer);
+        this._orgLoadTimer = setTimeout(() => this._loadBrowseOrgRepos(), 300);
+      } else {
+        this._orgRepos = [];
+        this._selectedOrgRepos = {};
+      }
+    }, 300);
+  }
+
+  _clearSearch() {
+    this._searchText = ''; this.search = ''; this.page = 1;
+    this._persistState(); this._load();
+  }
+
+  _onStatusFilter(value) { this.statusFilter = value; this.page = 1; this._persistState(); this._load(); }
+  _onTypeFilter(value) { this.category = value; this.page = 1; this._persistState(); this._load(); }
+  _onTagFilter(value) {
+    // Single-select: the backend supports exactly one tag, and combining two
+    // made _load() drop the tag entirely — "favorites + anything" then listed
+    // the whole catalog client-side.
+    if (this._tagFilters.includes(value)) {
+      this._tagFilters = [];
+    } else {
+      this._tagFilters = [value];
+    }
+    this.page = 1;
+    this._load();
+  }
+
+  _onSortColumn(key) {
+    if (this.sort === key) {
+      this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+    } else {
+      this.sort = key;
+      this.sortDir = key === 'name' ? 'asc' : 'desc';
+    }
+    this.page = 1; this._persistState(); this._load();
+  }
+
+  _onGroupChange(e) { this.groupBy = e.target.value; this._persistState(); }
+  _onViewModeChange(mode) {
+    this.viewMode = mode;
+    try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
+  }
+  _toggleGroup(key) { this._collapsedGroups = { ...this._collapsedGroups, [key]: !this._collapsedGroups[key] }; }
+  _goPage(p) { this.page = p; this._persistState(); this._load(); }
+  _onPageSizeChange(e) {
+    this.pageSize = parseInt(e.target.value, 10);
+    this.limit = this.pageSize;
+    this.page = 1;
+    this._persistState();
+    this._load();
+  }
+  async _refresh() {
+    this.refreshing = true;
+    this.page = 1;
+    this._persistState();
+    try {
+      await api.refresh();
+    } catch(e) { /* non-critical */ }
+    await this._load();
+    this.refreshing = false;
+  }
+
+  async _quickAddFromSearch() {
+    let fullName = this._parseRepoUrl(this.search);
+    // If search text doesn't match owner/repo format, use first org repo
+    if (!fullName && this._orgRepos && this._orgRepos.length > 0) {
+      fullName = this._orgRepos[0].full_name;
+    }
+    // Or use first HACS memory result
+    if (!fullName && this.repos && this.repos.length > 0) {
+      fullName = this.repos[0].full_name;
+    }
+    if (!fullName || !fullName.includes('/')) { showToast(t('invalidRepoUrl'), 'error'); return; }
+    this._addFromSearchInstalling = true;
+    try {
+      const result = await api.addCustomRepo(fullName, this._addFromSearchCategory);
+      if (result.success) {
+        showToast(`${t('addSuccess')}: ${fullName}`, 'success');
+        this._load();
+        this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      } else { showToast(`${t('addFailed')}: ${result.error}`, 'error'); }
+    } catch(e) { showToast(`${t('addFailed')}: ${e.message}`, 'error'); }
+    this._addFromSearchInstalling = false;
+  }
+
+  _parseRepoUrl(url) {
+    const match = url.match(/github\.com\/([^/]+\/[^/\s?#]+)/i);
+    if (match) return match[1].replace(/\.git$/, '');
+    if (/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(url)) return url;
+    return null;
+  }
+
+  get _browseFilteredSortedOrgRepos() {
+    const q = (this._orgFilter || '').trim().toLowerCase();
+    if (!q) return this._orgRepos;
+    return [...this._orgRepos]
+      .filter(r => r.full_name.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const na = a.full_name.toLowerCase();
+        const nb = b.full_name.toLowerCase();
+        if (na === q && nb !== q) return -1;
+        if (nb === q && na !== q) return 1;
+        if (na.startsWith(q) && !nb.startsWith(q)) return -1;
+        if (nb.startsWith(q) && !na.startsWith(q)) return 1;
+        return na.length - nb.length;
+      });
+  }
+
+  get _browseOrgFilteredCount() {
+    return this._browseFilteredSortedOrgRepos.length;
+  }
+
+  async _loadBrowseOrgRepos() {
+    const org = this.search?.trim();
+    if (!org || this._parseRepoUrl(org) || org.length < 3) return;
+    this._orgLoading = true;
+    this._orgRepos = [];
+    this._selectedOrgRepos = {};
+    this._orgSyncResult = '';
+    try {
+      const result = await api.listOrgRepos(org);
+      if (result?.repos) {
+        this._orgRepos = result.repos;
+      }
+    } catch(e) {
+      if (e.status === 404) return;
+      showToast(`${t('loadFailedSimple')}: ${e.message}`, 'error');
+    }
+    this._orgLoading = false;
+  }
+
+  _openOrgRepoDetail(repo) {
+    // Dispatch detail event to open the detail modal for org repos
+    this.dispatchEvent(new CustomEvent('detail', {
+      detail: { repo: { ...repo, source: 'github', custom: true } },
+      bubbles: true, composed: true
+    }));
+  }
+
+  _toggleBrowseOrgRepo(fullName) {
+    if (this._selectedOrgRepos[fullName]) {
+      const updated = { ...this._selectedOrgRepos };
+      delete updated[fullName];
+      this._selectedOrgRepos = updated;
+    } else {
+      this._selectedOrgRepos = { ...this._selectedOrgRepos, [fullName]: true };
+    }
+  }
+
+  _toggleSelectAllBrowseOrg(checked) {
+    const filtered = this._browseFilteredSortedOrgRepos;
+    if (checked) {
+      const sel = {};
+      filtered.forEach(r => sel[r.full_name] = true);
+      this._selectedOrgRepos = sel;
+    } else {
+      this._selectedOrgRepos = {};
+    }
+  }
+
+  async _syncSelectedBrowseOrg() {
+    const selectedNames = Object.keys(this._selectedOrgRepos);
+    if (selectedNames.length === 0) return;
+    this._orgSyncing = true;
+    try {
+      const selectedItems = selectedNames.map(name => ({ full_name: name, category: "integration" }));
+      const result = await api.syncStarred(selectedItems);
+      const results = result?.results || [];
+      const ok = results.filter(r => r.success).length;
+      const fail = results.filter(r => !r.success).length;
+      const failPart = fail ? t('failPartSuffix', { fail }) : '';
+      this._orgSyncResult = t('syncDoneResult', { ok, failPart });
+      this._orgSyncFailed = !!fail;
+      if (ok > 0) {
+        showToast(t('addedToCustomList') + ` (${ok})`, 'success');
+        this._load();
+        this.dispatchEvent(new CustomEvent('refresh-stats', { bubbles: true, composed: true }));
+      }
+    } catch(e) {
+      this._orgSyncResult = `${t('addFailed')}: ${e.message}`;
+      this._orgSyncFailed = true;
+    }
+    this._orgSyncing = false;
+  }
+  _getRepoStatus(repo) {
+    if (repo.pending_restart) return 'pending_restart';
+    if (repo.installed && (repo.has_update || (repo.installed_version && repo.latest_version && repo.installed_version !== repo.latest_version))) return 'pending-upgrade';
+    if (repo.installed) return 'installed';
+    return 'default';
+  }
+
+  _getStatusBadge(status) {
+    const map = {
+      'installed': { label: t('statusInstalled'), cls: 'installed' },
+      'pending-upgrade': { label: t('statusPendingUpgrade'), cls: 'pending-upgrade' },
+      'pending-restart': { label: t('statusPendingRestart'), cls: 'pending-restart' },
+      'default': { label: t('statusDefault'), cls: 'default' },
+    };
+    const info = map[status] || { label: status, cls: 'default' };
+    return html`<span class="status-badge ${info.cls}">${info.label}</span>`;
+  }
+
+  _getStatusLabel(status) {
+    const map = {
+      installed: t('statusInstalled'), not_installed: t('statusDefault'),
+      update_available: t('statusPendingUpgrade'), pending_restart: t('statusPendingRestart'),
+    };
+    return map[status] || status;
+  }
+
+  _applyFilters(repos) {
+    // Status and tag filtering is done server-side.
+    // Only favorites filter is client-side (no server-side equivalent).
+    if (this._tagFilters.includes('favorites')) {
+      return repos.filter(r => this._favorites.includes(String(r.id)) || this._favorites.includes(r.full_name));
+    }
+    return repos;
+  }
+
+  _getFiltered() {
+    let repos = this._applyFilters(this.repos);
+    if (!this.search) return repos;
+    const q = this.search.toLowerCase();
+    // Extract owner/repo from GitHub URL if applicable
+    let extractedPath = null;
+    const githubMatch = q.match(/github\.com\/([^/]+\/[^/\s?#]+)/i);
+    if (githubMatch) {
+      extractedPath = githubMatch[1].replace(/\.git$/, '').toLowerCase();
+    }
+    return repos.filter(r => {
+      const fullName = (r.full_name || '').toLowerCase();
+      const name = (r.name || '').toLowerCase();
+      const desc = (r.description || '').toLowerCase();
+      const authors = (r.authors || []).join(',').toLowerCase();
+      const manifestName = (r.manifest_name || r.repository_manifest?.name || '').toLowerCase();
+      // Basic field matching
+      if (fullName.includes(q) || name.includes(q) || desc.includes(q) || authors.includes(q)) return true;
+      // GitHub URL match: compare extracted owner/repo against full_name
+      if (extractedPath && (fullName === extractedPath || fullName.includes(extractedPath))) return true;
+      // manifest_name match
+      if (manifestName.includes(q)) return true;
+      return false;
+    });
+  }
+
+  _groupRepos(repos) {
+    if (this.groupBy === 'none') return null;
+    const groups = {};
+    for (const repo of repos) {
+      let key;
+      if (this.groupBy === 'status') key = this._getRepoStatus(repo);
+      else if (this.groupBy === 'type') key = repo.category || 'other';
+      else key = 'other';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(repo);
+    }
+    const statusOrder = ['pending-restart', 'pending-upgrade', 'installed', 'default'];
+    const typeOrder = ['integration', 'plugin', 'theme', 'template', 'other'];
+    const keys = Object.keys(groups);
+    if (this.groupBy === 'status') keys.sort((a, b) => statusOrder.indexOf(a) - statusOrder.indexOf(b));
+    else if (this.groupBy === 'type') keys.sort((a, b) => typeOrder.indexOf(a) - typeOrder.indexOf(b));
+    return keys.map(k => ({
+      key: k,
+      label: this.groupBy === 'status' ? this._getStatusLabel(k) : this._getCategoryLabel(k),
+      repos: groups[k],
+    }));
+  }
+
+  _getCategoryLabel(cat) {
+    const labels = {
+      integration: t('catIntegration'), plugin: t('catPlugin'), theme: t('catTheme'),
+      template: t('catTemplate'), other: cat,
+    };
+    return labels[cat] || cat;
+  }
+
+  _formatDate(dateStr) {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diff = now - d;
+      const days = Math.floor(diff / 86400000);
+      if (days === 0) return t('today') ;
+      if (days === 1) return t('yesterday') ;
+      if (days < 30) return `${days}d`;
+      if (days < 365) return `${Math.floor(days / 30)}mo`;
+      return `${Math.floor(days / 365)}y`;
+    } catch { return ''; }
+  }
+
+  _toggleSelect(fullName) {
+    if (this._selectedRepos.includes(fullName)) {
+      this._selectedRepos = this._selectedRepos.filter(n => n !== fullName);
+    } else {
+      this._selectedRepos = [...this._selectedRepos, fullName];
+    }
+  }
+
+  _isAllSelected() {
+    const displayRepos = this._getFiltered();
+    return displayRepos.length > 0 && this._selectedRepos.length === displayRepos.length;
+  }
+
+  _toggleSelectAll() {
+    const displayRepos = this._getFiltered();
+    if (this._isAllSelected()) {
+      this._selectedRepos = [];
+    } else {
+      this._selectedRepos = displayRepos.map(r => r.full_name).filter(Boolean);
+    }
+  }
+
+  async _batchDo(action) {
+    if (this._selectedRepos.length === 0) return;
+    const repos = this._selectedRepos.map(name => {
+      const repo = this.repos.find(r => r.full_name === name);
+      return { repository: name, category: repo?.category || 'integration' };
+    });
+
+    if (action === 'remove') {
+      const { ConfirmDialog } = await import('../shared/confirm-dialog.js');
+      const ok = await ConfirmDialog.show(this, {
+        message: t('batchRemoveConfirm', { n: repos.length }),
+        confirmText: t('batchRemove'),
+        danger: true,
+      });
+      if (!ok) return;
+    }
+
+    try {
+      showToast(t('batchInProgress'), 'info');
+      let result;
+      if (action === 'install') {
+        result = await api.batchInstall(repos);
+      } else if (action === 'update') {
+        result = await api.update(repos.map(r => r.repository));
+      } else {
+        result = await api.batchRemove(repos.map(r => r.repository));
+      }
+      showToast(t('batchComplete'), 'success');
+      this._selectedRepos = [];
+      this._load();
+    } catch(e) {
+      showToast(`${action} failed: ${e.message}`, 'error');
+    }
+  }
+
+
+  _renderRepoList(repos) {
+    if (this.viewMode === 'list') {
+      return html`<div class="list-view">${this._renderListTable(repos)}</div>`;
+    }
+    return html`<div class="grid">${repos.map(r => html`
+      <repo-card .repo=${r} ._installing=${!!this._installingIds?.[r.id || r.full_name]}
+        ?showCheckbox=${true} ?selected=${this._selectedRepos.includes(r.full_name)}
+        .starred=${this._starredMap?.[r.full_name] ?? false}
+        .configEntries=${this.configEntries}
+        .autoUpdateRepos=${this._autoUpdateRepos}
+        @check-change=${(e) => { if (e.detail?.fullName) this._toggleSelect(e.detail.fullName); }}>
+      </repo-card>
+    `)}</div>`;
+  }
+
+  _renderListTable(repos) {
+    const sortArrow = (key) => {
+      if (this.sort !== key) return '';
+      return this.sortDir === 'desc' ? ' ▼' : ' ▲';
+    };
+    const thClass = (key) => `sortable ${this.sort === key ? 'active-sort' : ''}`;
+
+    return html`
+      <table class="list-table">
+        <thead>
+          <tr>
+            <th class="col-icon"></th>
+            <th class="${thClass('name')}" @click=${() => this._onSortColumn('name')}>${t('colName') }<span class="sort-arrow">${sortArrow('name')}</span></th>
+            <th class="${thClass('downloads')} col-downloads" @click=${() => this._onSortColumn('downloads')}>${t('colDownloads') }<span class="sort-arrow">${sortArrow('downloads')}</span></th>
+            <th class="${thClass('stars')} col-stars" @click=${() => this._onSortColumn('stars')}>${t('colStars') }<span class="sort-arrow">${sortArrow('stars')}</span></th>
+            <th class="${thClass('last_updated')} col-last-updated" @click=${() => this._onSortColumn('last_updated')}>${t('colLastUpdated') }<span class="sort-arrow">${sortArrow('last_updated')}</span></th>
+            <th class="${thClass('installed_version')} col-installed-ver" @click=${() => this._onSortColumn('installed_version')}>${t('colInstalledVer') }<span class="sort-arrow">${sortArrow('installed_version')}</span></th>
+            <th class="${thClass('latest_version')} col-available-ver" @click=${() => this._onSortColumn('latest_version')}>${t('colAvailableVer') }<span class="sort-arrow">${sortArrow('latest_version')}</span></th>
+            <th class="${thClass('installed_at')} col-installed-at" @click=${() => this._onSortColumn('installed_at')}>${t('colInstalledAt') }<span class="sort-arrow">${sortArrow('installed_at')}</span></th>
+            <th class="col-status">${t('colStatus') }</th>
+            <th class="actions-cell"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${repos.map(r => this._renderListRow(r))}
+        </tbody>
+      </table>
+    `;
+  }
+
+  _renderListRow(r) {
+    const category = r.category || 'integration';
+    const categoryColor = getCategoryColor(category);
+    const name = r.manifest_name || r.repository_manifest?.name || r.full_name || r.name || '?';
+    const stars = r.stars || r.stargazers_count || 0;
+    const downloads = r.downloads || 0;
+    const status = this._getRepoStatus(r);
+    const isInstalled = r.installed || false;
+    const isUpdateAvailable = status === 'pending-upgrade';
+    const repoId = r.id || r.full_name;
+    const installing = !!this._installingIds?.[repoId];
+
+    return html`
+      <tr @click=${() => this._handleDetail(r)}>
+        <td class="col-icon"><div class="icon-cell" style="background:${categoryColor}">
+          ${r.domain && r.category === 'integration'
+            ? html`
+              <img src="https://brands.home-assistant.io/${r.domain}/icon.png" style="width:100%;height:100%;object-fit:cover;" @error=${e => { e.target.style.display='none'; e.target.nextSibling.style.display='flex'; }}>
+              <span style="display:none">${(name || '?').charAt(0).toUpperCase()}</span>
+            `
+            : (name || '?').charAt(0).toUpperCase()
+          }
+        </div></td>
+        <td class="name-cell">${name}<br><span class="desc-cell">${r.description || ''}</span>
+          ${r.is_custom ? html`<span class="custom-tag-list">${t('customBadge')}</span>` : ''}
+          ${r.topics && r.topics.length ? html`<br><span class="topic-chips">${r.topics.slice(0, 4).map(t => html`<span class="topic-chip">${t}</span>`)}</span>` : ''}
+        </td>
+        <td class="num-cell col-downloads">${downloads ? downloads.toLocaleString() : '-'}</td>
+        <td class="num-cell col-stars"><svg viewBox="0 0 20 20" fill="#ff9800" width="14" height="14" style="vertical-align:middle;"><path d="M10 1l2.39 4.84L17.6 6.7l-3.8 3.71.9 5.26L10 13.27l-4.7 2.46.9-5.26L2.4 6.7l5.2-.86L10 1z"/></svg> ${typeof stars === 'number' ? stars.toLocaleString() : stars}</td>
+        <td class="ver-cell col-last-updated">${this._formatDate(r.last_updated)}</td>
+        <td class="ver-cell col-installed-ver">${isInstalled ? (r.installed_version || '-') : '-'}</td>
+        <td class="ver-cell col-available-ver">${r.latest_version || '-'}</td>
+        <td class="ver-cell col-installed-at">${r.installed_at ? this._formatDate(r.installed_at) : '-'}</td>
+        <td class="status-cell col-status">${this._getStatusBadge(status)}</td>
+        <td class="actions-cell">
+          <button class="action-sm star-btn ${this._starredMap?.[r.full_name] ? 'starred' : ''}"
+            @click=${e => { e.stopPropagation(); this._toggleStar(r); }}
+            title=${this._starredMap?.[r.full_name] ? t('unstar')  : t('star') }>
+            <svg viewBox="0 0 20 20" fill="${this._starredMap?.[r.full_name] ? '#ff9800' : 'none'}" stroke="#ff9800" stroke-width="1.5" width="12" height="12" style="vertical-align:middle;"><path d="M10 1l2.39 4.84L17.6 6.7l-3.8 3.71.9 5.26L10 13.27l-4.7 2.46.9-5.26L2.4 6.7l5.2-.86L10 1z"/></svg>
+          </button>
+          ${isInstalled ? html`
+            ${isUpdateAvailable ? html`<button class="action-sm primary" @click=${e => { e.stopPropagation(); this._handleUpdate(r); }}>${t('update')}</button>` : ''}
+          ` : html`
+            <button class="action-sm primary ${installing ? 'installing' : ''}" @click=${e => { e.stopPropagation(); this._handleInstall(r); }} ?disabled=${installing}>${installing ? html`<svg class="mini-icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>` : t('install')}</button>
+          `}
+        </td>
+      </tr>
+    `;
+  }
+
+  render() {
+    const totalPages = Math.ceil(this.total / this.limit);
+    const displayRepos = this._getFiltered();
+    const grouped = this._groupRepos(displayRepos);
+
+    return html`
+      <!-- Controls: Search + Action Buttons -->
+      <div class="controls">
+        <button class="filter-toggle-sm" @click=${() => { this._filterExpanded = !this._filterExpanded; }} title="${t('filterMore') }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="12" y1="18" x2="20" y2="18"/></svg>
+        </button>
+        <div class="search">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input type="text" autocomplete="off" placeholder="${t('searchPlaceholder')}" .value=${this._searchText} @input=${this._onSearch} />
+          ${this.search ? html`<button class="search-clear" @click=${this._clearSearch}>✕</button>` : ''}
+        </div>
+        <div class="controls-right">
+          <button class="refresh-btn ${this.refreshing ? 'spinning' : ''}" @click=${this._refresh} ?disabled=${this.refreshing} title="${t('refreshTitle')}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
+              <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+            </svg>
+          </button>
+          <button class="view-toggle-btn" @click=${() => this._onViewModeChange(this.viewMode === 'card' ? 'list' : 'card')} title="${this.viewMode === 'card' ? t('viewList') : t('viewCard')}">
+            ${this.viewMode === 'card' ? html`
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            ` : html`
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            `}
+          </button>
+          <label class="sel-all-label desktop-only">
+            <input type="checkbox" class="checkbox-sm" .checked=${this._isAllSelected()}
+                   @click=${e => e.stopPropagation()} @change=${this._toggleSelectAll}>
+            ${t('selectAll') }
+            ${this._selectedRepos.length > 0 ? html`<span style="color:var(--primary-color);font-weight:600;">(${this._selectedRepos.length})</span>` : ''}
+          </label>
+        </div>
+      </div>
+
+      <!-- Inline Add / Org Repos (integrated with search) -->
+      ${this.search && !this.loading ? html`
+        ${this._parseRepoUrl(this.search) ? html`
+        <div class="search-add-bar" style="display:flex;align-items:center;gap:8px;padding:10px 14px;margin-bottom:10px;background:var(--card-background-color);border-radius:10px;border:1px solid var(--divider-color);flex-wrap:wrap;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
+          <span style="font-size:13px;font-weight:600;color:var(--primary-text-color);flex-shrink:0;">${this._parseRepoUrl(this.search)}</span>
+          <span style="font-size:12px;color:var(--secondary-text-color);flex:1;">${t('noMatchAdd')}</span>
+          <select class="form-select" style="padding:6px 10px;font-size:12px;border:1px solid var(--divider-color);border-radius:8px;background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer;flex-shrink:0;"
+            .value=${this._addFromSearchCategory} @change=${e => { this._addFromSearchCategory = e.target.value; }}>
+            <option value="integration">${t('catIntegration')}</option>
+            <option value="plugin">${t('catPlugin')}</option>
+            <option value="theme">${t('catTheme')}</option>
+            <option value="template">${t('catTemplate')}</option>
+            <option value="dashboard">${t('catDashboard')}</option>
+          </select>
+          <button class="btn primary" style="padding:6px 12px;font-size:12px;min-height:32px;white-space:nowrap;flex-shrink:0;"
+            @click=${this._quickAddFromSearch} ?disabled=${this._addFromSearchInstalling}>
+            ${this._addFromSearchInstalling
+              ? html`<svg class="mini-icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;vertical-align:middle;margin-right:4px;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> ${t('adding')}`
+              : html`<svg class="mini-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;vertical-align:middle;margin-right:4px;"><polyline points="20 6 9 17 4 12"/></svg> ${t('addFromSearch')}`}
+          </button>
+        </div>
+        ` : this._orgRepos.length > 0 ? html`
+        <div style="margin-bottom:10px;border:1px solid var(--divider-color);border-radius:10px;background:var(--card-background-color);">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 3.5v0c6 6 6 14 0 20"/><path d="M16 3.5v0c-6 6-6 14 0 20"/><path d="M2.5 9h19"/><path d="M2.5 15h19"/></svg>
+            <span style="font-size:13px;font-weight:600;color:var(--primary-text-color);flex-shrink:0;">${this.search}</span>
+            <span style="font-size:12px;color:var(--secondary-text-color);flex:1;">${this._orgRepos.length} ${t('repositories')}</span>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;white-space:nowrap;color:var(--primary-text-color);flex-shrink:0;">
+              <input type="checkbox" .checked=${this._browseOrgFilteredCount > 0 && Object.keys(this._selectedOrgRepos).length === this._browseOrgFilteredCount}
+                ?indeterminate=${Object.keys(this._selectedOrgRepos).length > 0 && Object.keys(this._selectedOrgRepos).length < this._browseOrgFilteredCount}
+                @change=${e => this._toggleSelectAllBrowseOrg(e.target.checked)}
+                style="width:14px;height:14px;accent-color:var(--primary-color);">
+              ${t('selectAll')}
+            </label>
+            <input type="text" placeholder="${t('filterPlaceholder')}" .value=${this._orgFilter}
+              @input=${e => { this._orgFilter = e.target.value; this.requestUpdate(); }}
+              style="width:120px;padding:4px 8px;border:1px solid var(--divider-color);border-radius:6px;font-size:12px;background:var(--input-background-color,var(--card-background-color));color:var(--primary-text-color);outline:none;flex-shrink:0;">
+            <button class="btn primary" style="font-size:11px;padding:4px 10px;min-height:28px;white-space:nowrap;flex-shrink:0;" @click=${this._syncSelectedBrowseOrg} ?disabled=${this._orgSyncing || Object.keys(this._selectedOrgRepos).length === 0}>
+              ${this._orgSyncing ? t('syncing') : `${t('syncSelected')} (${Object.keys(this._selectedOrgRepos).length})`}
+            </button>
+          </div>
+          ${this._orgSyncResult ? html`<div style="font-size:11px;padding:4px 14px 8px;color:${this._orgSyncFailed ? '#f44336' : 'var(--primary-text-color)'};">${this._orgSyncResult}</div>` : ''}
+          <div style="max-height:200px;overflow-y:auto;border-top:1px solid var(--divider-color);">
+            ${this._browseFilteredSortedOrgRepos.map(r => html`
+              <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--divider-color);font-size:12px;cursor:pointer;transition:background 0.1s;color:var(--primary-text-color);" @click=${() => this._openOrgRepoDetail(r)}>
+                <input type="checkbox" .checked=${!!this._selectedOrgRepos[r.full_name]}
+                  @click=${(e) => { e.stopPropagation(); this._toggleBrowseOrgRepo(r.full_name); }}
+                  style="width:14px;height:14px;cursor:pointer;accent-color:var(--primary-color);flex-shrink:0;">
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  <strong>${r.full_name}</strong>
+                  <span style="color:var(--secondary-text-color);margin-left:4px;">⭐${r.stars?.toLocaleString() || 0}</span>
+                  ${r.category ? html`<span style="margin-left:4px;padding:1px 5px;border-radius:4px;background:var(--primary-color);color:#fff;font-size:10px;">${r.category}</span>` : ''}
+                </span>
+              </div>
+            `)}
+          </div>
+        </div>
+        ` : this._orgLoading ? html`
+        <div style="padding:12px 14px;margin-bottom:10px;text-align:center;color:var(--secondary-text-color);font-size:12px;border:1px solid var(--divider-color);border-radius:10px;background:var(--card-background-color);">
+          <svg class="mini-icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:middle;margin-right:6px;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> ${t('searching')}
+        </div>
+        ` : ''}
+      ` : ''}
+
+      <!-- Filters + Sort: compact row with prominent labels -->
+      <div class="filter-sort-row ${this._filterExpanded ? 'expanded' : ''}">
+        <div class="fs-chips">
+          <span class="fs-label">${t('filterStatus')}</span>
+          ${this.statusOptions
+            .filter(opt => opt.value === '' || (this.statusCounts[opt.value] ?? 0) > 0)
+            .map(opt => html`
+            <button class="filter-chip ${this.statusFilter === opt.value ? 'active' : ''}" @click=${() => this._onStatusFilter(opt.value)}>${opt.label}${opt.value === '' ? html`<span class="chip-count">${this.total ?? 0}</span>` : ''}</button>
+          `)}
+          <span class="fs-divider"></span>
+          <span class="fs-label">${t('filterTags')}</span>
+          <button class="filter-chip ${this._tagFilters.includes('favorites') ? 'active' : ''}" @click=${() => this._onTagFilter('favorites')}>
+            ${t('tagFavorites')}
+          </button>
+          <button class="filter-chip ${this._tagFilters.includes('new') ? 'active' : ''}" @click=${() => this._onTagFilter('new')}>
+            ${t('tagNew') }
+          </button>
+          <button class="filter-chip ${this._tagFilters.includes('custom') ? 'active' : ''}" @click=${() => this._onTagFilter('custom')}>
+            ${t('tagCustom')}
+          </button>
+          <span class="fs-divider"></span>
+          <span class="fs-label">${t('filterType')}</span>
+          ${this.typeOptions
+            .filter(opt => opt.value === '' || (this.categoryCounts[opt.value] ?? 0) > 0)
+            .map(opt => html`
+            <button class="filter-chip ${this.category === opt.value ? 'active' : ''}" @click=${() => this._onTypeFilter(opt.value)}>
+              ${opt.label}
+            </button>
+          `)}
+          <span class="fs-divider"></span>
+          <span class="fs-label">${t('sort') }</span>
+          ${this.sortColumns.map(col => html`
+            <button class="filter-chip sort-inline ${this.sort === col.key ? 'active' : ''}" @click=${() => this._onSortColumn(col.key)}>
+              ${col.label}${this.sort === col.key ? html`<span class="sort-dir">${this.sortDir === 'desc' ? '▼' : '▲'}</span>` : ''}
+            </button>
+          `)}
+        </div>
+        <div class="fs-actions">
+          <label class="sel-all-label">
+            <input type="checkbox" class="checkbox-sm" .checked=${this._isAllSelected()}
+                   @click=${e => e.stopPropagation()} @change=${this._toggleSelectAll}>
+            ${t('selectAll') }
+            ${this._selectedRepos.length > 0 ? html`<span style="color:var(--primary-color);font-weight:600;">(${this._selectedRepos.length})</span>` : ''}
+          </label>
+        </div>
+      </div>
+
+      ${this._selectedRepos.length > 0 ? html`
+      <div class="batch-bar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span>${t('selected')}: ${this._selectedRepos.length}</span>
+        <div class="batch-actions">
+          <button class="batch-bar-btn" @click=${() => this._batchDo('install')} ?disabled=${this._addingRepo}>${t('batchInstall')}</button>
+          <button class="batch-bar-btn" @click=${() => this._batchDo('update')} ?disabled=${this._addingRepo}>${t('batchUpdate')}</button>
+          <button class="batch-bar-btn danger" @click=${() => this._batchDo('remove')} ?disabled=${this._addingRepo}>${t('batchRemove')}</button>
+          <button class="batch-bar-btn" style="background:transparent;border-color:transparent;font-size:14px;" @click=${() => { this._selectedRepos = []; this.requestUpdate(); }}>✕</button>
+        </div>
+      </div>
+      ` : ''}
+
+      <!-- Content -->
+      <div class="content-section">
+      ${this.loading ? html`
+        <div class="skeleton-grid">
+          ${[1,2,3,4,5,6].map(() => html`
+            <div class="skeleton-card">
+              <div class="skeleton-card-img"></div>
+              <div class="skeleton-card-body">
+                <div class="skeleton-line wide"></div>
+                <div class="skeleton-line medium"></div>
+                <div class="skeleton-line" style="width:40%"></div>
+              </div>
+            </div>
+          `)}
+        </div>
+      ` : displayRepos.length === 0 ? html`
+        <div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          <div>${this.search ? t('noMatch') : t('noData')}</div>
+        </div>
+      ` : html`
+
+        ${grouped ? html`
+          ${grouped.map(g => html`
+            <div class="group-header" @click=${() => this._toggleGroup(g.key)}>
+              <span class="group-arrow ${this._collapsedGroups[g.key] ? 'collapsed' : ''}">▼</span>
+              ${g.label}<span class="group-count">(${g.repos.length})</span>
+            </div>
+            ${!this._collapsedGroups[g.key] ? this._renderRepoList(g.repos) : ''}
+          `)}
+        ` : html`${this._renderRepoList(displayRepos)}`}
+
+        ${totalPages > 1 ? html`
+          <div class="pagination">
+            <button class="page-btn" ?disabled=${this.page <= 1} @click=${() => this._goPage(this.page - 1)}>${t('prevPage')}</button>
+            <span class="page-info">${t('page')} ${this.page} / ${totalPages}</span>
+            <button class="page-btn primary" ?disabled=${this.page >= totalPages} @click=${() => this._goPage(this.page + 1)}>${t('nextPage')}</button>
+            <select class="page-size-select" .value=${String(this.pageSize)} @change=${this._onPageSizeChange}>
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+          </div>
+        ` : ''}
+      </div>
+      `}
+    `;
+  }
+}
+
+if (!customElements.get('browse-view')) customElements.define('browse-view', BrowseView);

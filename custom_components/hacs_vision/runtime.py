@@ -1,0 +1,65 @@
+"""HACS Vision 运行时平台。"""
+from __future__ import annotations
+
+from homeassistant.components import frontend
+from homeassistant.config_entries import ConfigEntry
+
+from .const import URL_PATH
+
+class VisionRuntime:
+    """集中持有集成运行期全部状态与子模块实例。"""
+
+    def __init__(
+        self,
+        hass,
+        *,
+        shared_data,
+        operator,
+        backup,
+        checker,
+        api_view,
+        auto_update=None,
+    ) -> None:
+        self.hass = hass
+        self.shared_data = shared_data
+        self.operator = operator
+        self.backup = backup
+        self.checker = checker
+        self.api = api_view
+        self.auto_update = auto_update
+        self.listeners: list = []
+        self.bg_tasks: set = set()
+
+    async def shutdown(self) -> None:
+        """集中清理所有注册资源。"""
+        # 1. 移除侧边栏面板
+        try:
+            frontend.async_remove_panel(self.hass, URL_PATH)
+        except Exception:
+            pass
+
+        # 2. 停止 AutoUpdateManager
+        if self.auto_update:
+            self.auto_update.stop()
+
+        # 3. 移除事件监听
+        for unsub in self.listeners:
+            try:
+                unsub()
+            except Exception:
+                pass
+        self.listeners.clear()
+
+        # 5. 关闭 API 视图持有的会话（共享会话由 HA 管理，此处为空操作）
+        if self.api:
+            try:
+                await self.api.async_close()
+            except Exception:
+                pass
+
+        # 6. 取消后台任务
+        for task in list(self.bg_tasks):
+            task.cancel()
+        self.bg_tasks.clear()
+
+type VisionConfigEntry = ConfigEntry[VisionRuntime]
