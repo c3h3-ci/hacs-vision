@@ -355,7 +355,7 @@ class HACSOpsMixin:
         else:
             repos.sort(key=lambda r: r.get("stargazers_count", 0) or 0, reverse=True)
 
-        HACS_VISION_REPO = "C3H3-AI/hacs-vision"
+        HACS_VISION_REPO = "c3h3-ci/hacs-vision"
         for i, r in enumerate(repos):
             if r.get("full_name", "").lower() == HACS_VISION_REPO.lower():
                 repo = repos.pop(i)

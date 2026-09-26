@@ -1,11 +1,11 @@
 # HACS Vision
 
-[![HACS Validation](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml)
+[![HACS Validation](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Downloads](https://img.shields.io/github/downloads/C3H3-AI/hacs-vision/total)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Stars](https://img.shields.io/github/stars/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/stargazers)
-[![License](https://img.shields.io/github/license/C3H3-AI/hacs-vision)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Downloads](https://img.shields.io/github/downloads/c3h3-ci/hacs-vision/total)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Stars](https://img.shields.io/github/stars/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/stargazers)
+[![License](https://img.shields.io/github/license/c3h3-ci/hacs-vision)](LICENSE)
 
 [![中文](https://img.shields.io/badge/lang-zh--CN-blue.svg)](README.md)
 [![English](https://img.shields.io/badge/lang-en-red.svg)](README.en.md)
@@ -55,11 +55,11 @@
 
 | Store | Detail | Config Flow |
 |:-----:|:------:|:-----------:|
-| ![store](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/store.png) | ![detail](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/config-flow.png) |
+| ![store](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/store.png) | ![detail](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/config-flow.png) |
 | **Management** | **Updates** | **Settings** |
-| ![management](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/management.png) | ![updates](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/updates.png) | ![settings](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/settings.png) |
+| ![management](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/management.png) | ![updates](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/updates.png) | ![settings](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/settings.png) |
 | **Integrations** | **Integration Config** | |
-| ![integrations](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integrations.png) | ![integration-config](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integration-config.png) | |
+| ![integrations](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integrations.png) | ![integration-config](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integration-config.png) | |
 
 ---
 
@@ -71,14 +71,14 @@
 
 1. Stellen Sie sicher, dass [HACS](https://hacs.xyz) installiert ist
 2. Gehen Sie zu **HACS → Integrationen → Benutzerdefinierte Repositorys** (Menü oben rechts)
-3. Fügen Sie die Repository-URL hinzu: `https://github.com/C3H3-AI/hacs-vision`
+3. Fügen Sie die Repository-URL hinzu: `https://github.com/c3h3-ci/hacs-vision`
 4. Kategorie: **Integration**
 5. Klicken Sie auf **Installieren**
 6. **Home Assistant neu starten**
 
 ### Manuelle Installation
 
-1. Laden Sie die neueste [Version](https://github.com/C3H3-AI/hacs-vision/releases) herunter
+1. Laden Sie die neueste [Version](https://github.com/c3h3-ci/hacs-vision/releases) herunter
 2. Kopieren Sie das Verzeichnis `custom_components/hacs_vision` in das `custom_components/`-Verzeichnis von HA
 3. Starten Sie Home Assistant neu
 
@@ -470,8 +470,8 @@ A: Bei Installation über HACS erscheinen Updates auf der Update-Seite. Bei manu
 
 ## Support
 
-- [Issue melden](https://github.com/C3H3-AI/hacs-vision/issues)
-- [Diskussionen](https://github.com/C3H3-AI/hacs-vision/discussions)
+- [Issue melden](https://github.com/c3h3-ci/hacs-vision/issues)
+- [Diskussionen](https://github.com/c3h3-ci/hacs-vision/discussions)
 
 ## Lizenz
 
@@ -480,5 +480,5 @@ MIT License — siehe [LICENSE](LICENSE)
 ---
 
 <p align="center">
-  Mit ❤️ gemacht von <a href="https://github.com/C3H3-AI">C3H3-AI</a>
+  Mit ❤️ gemacht von <a href="https://github.com/c3h3-ci">c3h3-ci</a>
 </p>

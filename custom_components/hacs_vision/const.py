@@ -52,4 +52,4 @@ HA_LOCALHOST_FALLBACK = "http://localhost:8123"
 VALID_HACS_CATEGORIES = {"integration", "plugin", "python_script", "theme", "appdaemon", "netdaemon", "template"}
 
 # ── 默认仓库 ──
-AUTO_STAR_REPO = "C3H3-AI/hacs-vision"
+AUTO_STAR_REPO = "c3h3-ci/hacs-vision"

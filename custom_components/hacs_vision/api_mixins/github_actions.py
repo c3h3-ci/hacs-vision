@@ -46,7 +46,7 @@ class GitHubActionsMixin:
 
     async def _github_auto_star(self) -> web.Response:
         """若尚未加星则自动给 hacs-vision 仓库加星。"""
-        repo = "C3H3-AI/hacs-vision"
+        repo = "c3h3-ci/hacs-vision"
         check_resp = await self._github_check_starred(repo)
         check_data = json.loads(check_resp.body)
         if check_data.get("starred"):
