@@ -70,3 +70,6 @@ HACS_VISION_*.md
 UI_AUDIT_REPORT.md
 overview.md
 diff_report.md
+
+# 主机部署备份（仅本地保留）
+.backup-host-*/
