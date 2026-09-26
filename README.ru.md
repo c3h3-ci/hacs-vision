@@ -1,11 +1,11 @@
 # HACS Vision
 
-[![HACS Validation](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml)
+[![HACS Validation](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Downloads](https://img.shields.io/github/downloads/C3H3-AI/hacs-vision/total)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Stars](https://img.shields.io/github/stars/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/stargazers)
-[![License](https://img.shields.io/github/license/C3H3-AI/hacs-vision)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Downloads](https://img.shields.io/github/downloads/c3h3-ci/hacs-vision/total)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Stars](https://img.shields.io/github/stars/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/stargazers)
+[![License](https://img.shields.io/github/license/c3h3-ci/hacs-vision)](LICENSE)
 
 [![English](https://img.shields.io/badge/lang-en-red.svg)](README.en.md)
 [![中文](https://img.shields.io/badge/lang-zh--CN-blue.svg)](README.md)
@@ -55,11 +55,11 @@
 
 | Магазин | Сведения | Config Flow |
 |:-----:|:------:|:-----------:|
-| ![магазин](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/store.png) | ![подробно](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/config-flow.png) |
+| ![магазин](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/store.png) | ![подробно](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/config-flow.png) |
 | **Управление** | **Обновления** | **Настройки** |
-| ![управление](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/management.png) | ![обновления](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/updates.png) | ![настройки](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/settings.png) |
+| ![управление](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/management.png) | ![обновления](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/updates.png) | ![настройки](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/settings.png) |
 | **Интеграции** | **Настройка интеграции** | |
-| ![интеграции](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integrations.png) | ![конфигурация-интеграции](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integration-config.png) | |
+| ![интеграции](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integrations.png) | ![конфигурация-интеграции](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integration-config.png) | |
 
 ---
 
@@ -71,14 +71,14 @@
 
 1. Убедитесь, что [HACS](https://hacs.xyz) установлен.
 2. Перейдите в **HACS → Интеграции → Пользовательские репозитории** (меню в правом верхнем углу).
-3. Добавьте URL-адрес репозитория: `https://github.com/C3H3-AI/hacs-vision`.
+3. Добавьте URL-адрес репозитория: `https://github.com/c3h3-ci/hacs-vision`.
 4. Категория: **Интеграция**
 5. Нажмите **Установить**.
 6. **Перезагрузите Home Assistant**
 
 ### Ручная установка
 
-1. Загрузите [последний выпуск](https://github.com/C3H3-AI/hacs-vision/releases).
+1. Загрузите [последний выпуск](https://github.com/c3h3-ci/hacs-vision/releases).
 2. Скопируйте `custom_components/hacs_vision` в каталог `custom_components/` Home Assistant.
 3. Перезапустите Home Assistant.
 
@@ -533,8 +533,8 @@ npm run build
 
 ## Поддержка
 
-- [Сообщить о проблеме](https://github.com/C3H3-AI/hacs-vision/issues)
-- [Обсуждения](https://github.com/C3H3-AI/hacs-vision/discussions)
+- [Сообщить о проблеме](https://github.com/c3h3-ci/hacs-vision/issues)
+- [Обсуждения](https://github.com/c3h3-ci/hacs-vision/discussions)
 
 ## Лицензия
 
@@ -543,5 +543,5 @@ npm run build
 ---
 
 <p align="center">
-Сделано с ❤️ командой <a href="https://github.com/C3H3-AI">C3H3-AI</a>
+Сделано с ❤️ командой <a href="https://github.com/c3h3-ci">c3h3-ci</a>
 </p>
