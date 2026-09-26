@@ -1,5 +1,14 @@
 # Changelog
 
+## v7.0.2 (2026-09-26) — 安装原子性：失败自动回滚 / Install Atomicity: Rollback on Failure
+
+### 🔧 修复 / Fixed
+
+- **安装失败导致集成目录丢失** — HACS 的安装流程是先删除已安装目录再下载新版本。若下载环节抛异常，目录会停留在**已删除**状态：集成凭空消失，但 config_entry 与实体仍在注册表中，HA 持续报 `not found`。现在安装前对已装目录做快照，成功则丢弃、失败则自动回滚，不再留下空目录中间态
+- **并发安装时快照互相覆盖** — 安装锁是按仓库粒度的，不同仓库可并发安装。快照路径若用实例属性保存会互相覆盖，导致回滚到**别的仓库**的备份。改用局部变量，每个安装流程持有自己的快照
+- **Install failure could wipe the integration directory** — HACS deletes the installed directory before downloading the new version. If the download throws, the directory stays deleted: the integration disappears while its config entry and entities remain registered, so HA keeps reporting `not found`. A snapshot is now taken before installing, discarded on success and restored on failure, removing that intermediate state
+- **Concurrent installs overwrote each other's snapshot** — install locks are per-repository, so different repositories may install concurrently. Keeping the snapshot path on the instance would let them overwrite each other and roll back to another repository's backup. It is now a local variable, so each install holds its own snapshot
+
 ## v7.0.1 (2026-09-14) — 服务令牌签发修复 / Service Token Issuance Fix
 
 ### 🔧 修复 / Fixed
