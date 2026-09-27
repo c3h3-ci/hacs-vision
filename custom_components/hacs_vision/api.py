@@ -1,5 +1,6 @@
 """HACS Vision API 平台。"""
 from __future__ import annotations
+import asyncio
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import re
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .const import API_BASE, VERSION
 from .hacs_data import HACSData
@@ -79,17 +81,15 @@ class HACSEnhancedAPI(GitHubAuthMixin, GitHubActionsMixin, HACSOpsMixin, ReadmeT
         self._auto_import_done = False
         self._oauth_device = None
         self._oauth_device_code = None
+        self._pending_cleanups: set[asyncio.Task] = set()
 
     @property
     def _ha_base_url(self) -> str:
         """动态获取 HA 基础地址（优先内网，回退外网）。"""
         try:
-            return self.hass.http.get_url()
-        except Exception:
-            try:
-                return self.hass.config.external_url or "http://localhost:8123"
-            except Exception:
-                return "http://localhost:8123"
+            return get_url(self.hass)
+        except NoURLAvailableError:
+            return self.hass.config.external_url or "http://localhost:8123"
 
     def _forbid_non_admin(self, request) -> web.Response | None:
         """要求管理员用户——面板注册仅管理员可用，但任何已鉴权的非管理员都能直接调用安装/移除/重启等端点。"""
@@ -322,7 +322,7 @@ def _read_file_binary(path: str) -> bytes:
         return f.read()
 
 class HACSBrandIconView(HomeAssistantView):
-    """提供自定义集成品牌图标（免鉴权，供 <img> 标签使用）。"""
+    """提供自定义集成品牌图标（公开静态资源，供前端 <img> 引用，无需鉴权）。"""
 
     url = "/api/hacs_vision_brand/{domain:.*}"
     name = "api:hacs_vision_brand"

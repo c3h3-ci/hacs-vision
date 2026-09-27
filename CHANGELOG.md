@@ -1,5 +1,63 @@
 # Changelog
 
+## v7.0.2 (2026-09-26) — 安装原子性：失败自动回滚 / Install Atomicity: Rollback on Failure
+
+### 🔧 修复 / Fixed
+
+- **安装失败导致集成目录丢失** — HACS 的安装流程是先删除已安装目录再下载新版本。若下载环节抛异常，目录会停留在**已删除**状态：集成凭空消失，但 config_entry 与实体仍在注册表中，HA 持续报 `not found`。现在安装前对已装目录做快照，成功则丢弃、失败则自动回滚，不再留下空目录中间态
+- **并发安装时快照互相覆盖** — 安装锁是按仓库粒度的，不同仓库可并发安装。快照路径若用实例属性保存会互相覆盖，导致回滚到**别的仓库**的备份。改用局部变量，每个安装流程持有自己的快照
+- **Install failure could wipe the integration directory** — HACS deletes the installed directory before downloading the new version. If the download throws, the directory stays deleted: the integration disappears while its config entry and entities remain registered, so HA keeps reporting `not found`. A snapshot is now taken before installing, discarded on success and restored on failure, removing that intermediate state
+- **Concurrent installs overwrote each other's snapshot** — install locks are per-repository, so different repositories may install concurrently. Keeping the snapshot path on the instance would let them overwrite each other and roll back to another repository's backup. It is now a local variable, so each install holds its own snapshot
+
+## v7.0.1 (2026-09-14) — 服务令牌签发修复 / Service Token Issuance Fix
+
+### 🔧 修复 / Fixed
+
+- **`replace_entity_refs` 服务写回静默失败 (#55)** — 调用服务返回成功，但配置从未写入。原因：签发临时访问令牌时把 `User` 对象直接传给 `hass.auth.async_create_access_token()`，并附加了不存在的 `client_name` / `expires` 关键字参数，触发 `TypeError` 使令牌恒为 `None`，仅在日志中以 WARNING 记录。访问令牌不能直接签发，须先从 refresh token 派生（`async_create_refresh_token(...)` → `async_create_access_token(refresh_token)`），其中 `client_id` 为 NORMAL 类型令牌的必填项
+- **`replace_entity_refs` silently failed to write config back (#55)** — The service reported success while the config was never written: the temporary access token was requested by passing a `User` object to `hass.auth.async_create_access_token()` along with non-existent `client_name` / `expires` keyword arguments, raising `TypeError` and leaving the token `None` (logged as a warning only). Access tokens must be derived from a refresh token (`async_create_refresh_token(...)` → `async_create_access_token(refresh_token)`), with `client_id` required for NORMAL-type tokens
+
+### ⚙️ 内部改进 / Internal
+
+- **OAuth `client_id` 解析失败时回退而非崩溃 (#53)** — HACS 未安装时不再抛 `ImportError`，改为返回明确的错误响应
+- **HACS 仓库注册结果核验 (#52)** — 注册后校验仓库确已进入 HACS 内存，避免静默跳过后续操作找不到仓库
+- **数据层加固 (#51)** — 存储键锁改为有界 `OrderedDict`；自动更新调度任务销毁时取消，避免悬空任务
+- **服务注册运行时无关化 (#49)** — 服务处理器按配置项解析运行时容器；实体引用替换改为整词匹配，避免 `light.kitchen` 误伤 `light.kitchen_table`
+- **移除多余 i18n `options` 块 (#50)** — 清理无对应 OptionsFlow 的翻译键
+
+## v7.0.0 (2026-09-14) — 最低 HA 版本提升至 2026.1.0 / Minimum HA raised to 2026.1.0
+
+> ⚠️ **破坏性变更 / BREAKING CHANGE** — 最低 Home Assistant 版本由 `2024.1.0` 提升至 **`2026.1.0`**。
+> 运行 HA 2024.1 ~ 2025.12 的用户**无法**使用本版本，请先升级 Home Assistant。
+>
+> **BREAKING:** The minimum supported Home Assistant version is raised from `2024.1.0` to **`2026.1.0`**.
+> Users on HA 2024.1 – 2025.12 cannot run this release — upgrade Home Assistant first.
+
+### ⚠️ 破坏性变更 / Breaking
+
+- **最低 HA 版本提升至 2026.1.0** — 由 `hacs.json` 的 `homeassistant: 2026.1.0` 声明，HACS 会对低版本用户拦截安装（Home Assistant 的 `manifest.json` 不支持该字段，最低版本只能由 `hacs.json` 声明）
+- **剔除旧版 API 与兼容分支 (#41)** — 移除针对旧版 HA 的探测与回退分支，统一走现行 API：
+  - 配置项变更改订阅 `SIGNAL_CONFIG_ENTRY_CHANGED`，替代不存在的 `config_entry_updated` / `config_entry_removed` 总线事件（此前缓存重建永不触发）
+  - `hass.http.get_url()` → `helpers.network.get_url`；`hass.data["system_log"]` → `LogErrorHandler.records.to_list()`
+  - 设备注册表改用 `dr.async_entries_for_config_entry`，替代 2026.9 起弃用的容器视图
+  - 蓝图与场景改走 `async_get_blueprints(hass)` 等公开 API；配置写入统一走 `POST /api/config/{domain}/config/{key}`
+  - 共 8 个文件，`+284 -358`（净删 74 行）
+- **Minimum HA raised to 2026.1.0** — declared through `hacs.json` (`homeassistant: 2026.1.0`); HACS blocks older installs (Home Assistant's `manifest.json` has no such field — the minimum can only be declared in `hacs.json`)
+- **Legacy API and compatibility branches removed (#41)** — all old-version probing and fallbacks are gone; the integration now targets current APIs only
+
+### 🔧 修复 / Fixed
+
+- **任意分支 / commit 安装完全失效 (#43)** — 版本选择器「Commit / 分支」页签选择任意分支或 commit 安装时必然失败，报 `No content to download`。根因是刷新仓库 tree 的调用早于 HACS 赋值 `self.ref`，缓存到的是**上一个 ref** 的 tree；随后 HACS 的 `update_filenames()` 又优先采用最新 release 的资源文件，把 `content.path.remote` 钉成 `"release"`，导致以分支名调用 `release_contents()` 匹配不到任何 release、文件收集为空
+- **修复方式** — 把 tree 刷新移入 `download_content` 钩子（此时 `self.ref` 已是请求的 ref），刷新后清空 `releases.objects` 让 HACS 依据该 ref 的 tree 重新推导 `file_name` / `content.path.remote`；`data.name` 为空时回退为仓库 slug（否则会拼出 `"None.js"` 匹配不到文件）；安装结束完整还原 `releases.objects` / `selected_tag` / `force_branch` / `download_content`
+- **Arbitrary branch/commit install was completely broken (#43)** — Installing any branch or commit from the version selector's "Commit / Branch" tab always failed with `No content to download`. The repository tree was refreshed before HACS assigned `self.ref`, so it cached the *previous* ref's tree; HACS' `update_filenames()` then preferred the latest release asset and pinned `content.path.remote` to `"release"`, making `release_contents(<branch>)` match no release and file gathering return empty
+- **Fix** — The tree refresh now runs inside a `download_content` hook (when `self.ref` is already the requested ref), releases are hidden afterwards so HACS re-derives `file_name` / `content.path.remote` from that ref's tree, `data.name` falls back to the repository slug (a missing name builds `"None.js"`, matching nothing), and `releases.objects` / `selected_tag` / `force_branch` / `download_content` are restored once the install finishes
+
+### 📌 升级须知 / Upgrade notes
+
+- HA < 2026.1.0：**请勿升级**本集成，保持在 v6.8.0；或先将 Home Assistant 升级至 2026.1.0 及以上
+- HA ≥ 2026.1.0：正常升级即可，无需手动迁移配置
+- HA < 2026.1.0: **do not upgrade** this integration — stay on v6.8.0, or upgrade Home Assistant first
+- HA ≥ 2026.1.0: upgrade normally; no manual migration required
+
 ## v6.8.0 (2026-09-13) — 重构与服务治理 / Refactor & Service Governance
 
 **Recommended.** Minimum Home Assistant version: 2026.1.0.
@@ -165,9 +223,9 @@ From beta1 through beta5 + 2 hotfixes (sync-favorites UnboundLocalError, custom 
 
 ### 🔧 修复 / Fixed
 
-- **侧边栏隐藏后无法离开面板 ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
+- **侧边栏隐藏后无法离开面板 (#29)** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
 - **修复了 768–870px 窗口宽度的盲区** — 此区间 HA 已把侧边栏变为抽屉，但面板此前不显示菜单按钮（面板旧阈值 768px 与 HA 的 870px 不一致）
-- **No escape from panel when sidebar hidden ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
+- **No escape from panel when sidebar hidden (#29)** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
 - **Fixed the 768–870px blind spot** — HA already turns the sidebar into a drawer in this range, but the panel's menu button did not show (old panel threshold 768px vs HA's 870px)
 
 ### ⌨️ 改进 / Improved
@@ -184,9 +242,9 @@ From beta1 through beta5 + 2 hotfixes (sync-favorites UnboundLocalError, custom 
 
 ### 🔧 修复 / Fixed
 
-- **侧边栏隐藏后无法离开面板 ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
+- **侧边栏隐藏后无法离开面板 (#29)** — 面板头部菜单按钮（汉堡）的显示条件与原生 HA 面板对齐：窄屏（HA 阈值 870px）或侧边栏被设为「始终隐藏」（`dockedSidebar: always_hidden`）时显示，点击派发 `hass-toggle-menu` 唤出侧边栏；侧边栏正常停靠的桌面端不显示（不回退 v5.0「移除冗余 ≡ 按钮」的决定），kiosk-mode 保持隐藏（与原生行为一致）
 - **修复了 768–870px 窗口宽度的盲区** — 此区间 HA 已把侧边栏变为抽屉，但面板此前不显示菜单按钮（面板旧阈值 768px 与 HA 的 870px 不一致）
-- **No escape from panel when sidebar hidden ([#29](https://github.com/C3H3-AI/hacs-vision/issues/29))** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
+- **No escape from panel when sidebar hidden (#29)** — The panel header menu button now shows under the same conditions as native HA panels: narrow viewport (HA threshold 870px) or when the sidebar dock mode is `always_hidden`; clicking dispatches `hass-toggle-menu` to reopen the sidebar. Stays hidden on desktop with a docked sidebar (respecting v5.0's removal of the redundant ≡ button), and stays hidden in kiosk-mode (native behavior)
 - **Fixed the 768–870px blind spot** — HA already turns the sidebar into a drawer in this range, but the panel's menu button did not show (old panel threshold 768px vs HA's 870px)
 
 ### ⌨️ 改进 / Improved
@@ -214,7 +272,7 @@ From beta1 through beta5 + 2 hotfixes (sync-favorites UnboundLocalError, custom 
 - **响应式布局修复** — 语言选择和设置区域改用响应式网格布局，解决长翻译标签溢出问题
 - **语言选择器修复** — 修复页面重载后语言选择器显示错误的问题，动态语言选项现在会正确选择有效语言
 
-### PR [#27](https://github.com/C3H3-AI/hacs-vision/pull/27)
+### PR #27
 
 ## v6.5.5 (2026-08-02) — XSS 安全修复 / XSS Security Fix
 
@@ -256,12 +314,12 @@ From beta1 through beta5 + 2 hotfixes (sync-favorites UnboundLocalError, custom 
 
 - **搜索+添加仓库合一** — 商店和仓库管理视图的搜索框直接支持添加仓库：输入 `owner/repo` 或 GitHub URL 自动显示内联添加栏，输入组织名自动加载仓库列表供批量勾选添加。移除独立的「+ 添加仓库」按钮和表单
 - **搜索能力增强** — 所有视图搜索统一支持 GitHub URL 解析、作者名搜索、组织名搜索
-- **详情弹窗仓库名可点击** — 详情弹窗中的仓库名（如 `C3H3-AI/hacs-vision`）变为可点击链接，直接跳转到 GitHub 仓库页面
+- **详情弹窗仓库名可点击** — 详情弹窗中的仓库名（如 `c3h3-ci/hacs-vision`）变为可点击链接，直接跳转到 GitHub 仓库页面
 - **提示词更新** — 搜索框占位提示改为「搜索或添加仓库...」，一目了然
 
 ### 🔧 修复
 
-- **自定义仓库注册失败** — `add_custom_repository` 使用 `check=False` 避免 GitHub API 限流/网络波动导致仓库注册失败（[hacs_operator.py#L829](https://github.com/C3H3-AI/hacs-vision/blob/main/custom_components/hacs_vision/hacs_operator.py#L829)）
+- **自定义仓库注册失败** — `add_custom_repository` 使用 `check=False` 避免 GitHub API 限流/网络波动导致仓库注册失败（`hacs_operator.py`）
 
 ## v6.3.0 (2026-07-05)
 

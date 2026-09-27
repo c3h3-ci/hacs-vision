@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import re
 import threading
 
@@ -699,6 +700,9 @@ class HACSOperator:
         if lock.locked():
             return {"success": False, "error": "install_already_in_progress"}
         async with lock:
+            # 快照用局部变量保存 —— 锁是按仓库粒度的，不同仓库可并发安装，
+            # 用实例属性会互相覆盖，导致回滚到别的仓库的备份。
+            install_snapshot: str | None = None
             try:
                 repo = self._find_repo(repo_id_or_name)
                 if not repo:
@@ -714,38 +718,57 @@ class HACSOperator:
 
                 is_release = version and self._is_release_version(repo, version)
                 saved_releases_objects = None
-                saved_file_name = None
+                saved_download_content = None
+
+                # 安装原子性：任何安装动作前先快照已装目录。
+                # HACS 会先删除旧目录再下载，下载失败即造成目录丢失，这里用于回滚。
+                install_snapshot = await self._snapshot_local_path(repo)
+
                 if version and not is_release:
+
                     meta = await self._fetch_repo_meta(repo_key)
                     live_default = meta.get("default_branch")
                     if live_default:
                         repo.data.default_branch = live_default
-                    repo.data.etag_repository = None
-                    repo.tree = []
+
                     saved_releases_objects = repo.releases.objects
-                    saved_file_name = repo.data.file_name
-                    repo.releases.objects = []
-                    repo.data.file_name = None
-                    await repo.update_repository(force=True)
+                    saved_download_content = repo.download_content
+
+                    async def _download_content_for_ref(
+                        version=None, _orig=saved_download_content, _repo=repo
+                    ):
+                        try:
+                            _repo.data.etag_repository = None
+                            await _repo.update_repository(force=True)
+                            _repo.releases.objects = []
+                            if not _repo.data.name:
+                                _repo.data.name = (
+                                    (_repo.data.full_name or "").split("/")[-1]
+                                    or _repo.data.name
+                                )
+                            _repo.content.path.remote = None
+                            _repo.data.file_name = None
+                            _repo.update_filenames()
+                            return await _orig(version)
+                        finally:
+                            _repo.releases.objects = saved_releases_objects
+
+                    repo.download_content = _download_content_for_ref
 
                 try:
                     if version and not is_release:
-                        # 官方任意引用安装器：处理
-                        # selected_tag / force_branch / ref（内部）。
                         await repo.async_download_repository(ref=version)
                     else:
                         await repo.async_install(version=version or repo.display_available_version)
                 finally:
-                    # 双保险恢复（async_download_repository 亦
-                    # 在其自身 finally 块中恢复这些）。
                     if version and getattr(repo.data, "selected_tag", None) == version:
                         repo.data.selected_tag = None
                     if version and getattr(repo, "force_branch", False):
                         repo.force_branch = False
+                    if saved_download_content is not None:
+                        repo.download_content = saved_download_content
                     if saved_releases_objects is not None:
                         repo.releases.objects = saved_releases_objects
-                    if saved_file_name is not None:
-                        repo.data.file_name = saved_file_name
 
                 self.set_install_progress(repo_key, 75, "installing", "Installing...")
                 self.invalidate_index()
@@ -754,10 +777,96 @@ class HACSOperator:
                 if from_version and to_version and from_version != to_version:
                     await self._history.add_record(repo.data.full_name, from_version, to_version)
                 self.set_install_progress(repo_key, 100, "complete", "Update complete")
+
+                # 安装成功 —— 丢弃回滚快照
+                await self._drop_snapshot(install_snapshot)
+                install_snapshot = None
+
                 return {"success": True, "repository": repo.data.full_name, "version": version or repo.display_installed_version}
             except Exception as e:
                 _LOGGER.error("Install version failed: %s", e, exc_info=True)
+
+                # 安装失败 —— 从快照回滚，避免留下空目录
+                if install_snapshot:
+                    try:
+                        repo_for_restore = self._find_repo(repo_id_or_name)
+                    except Exception:  # noqa: BLE001
+                        repo_for_restore = None
+                    await self._restore_snapshot(repo_for_restore, install_snapshot)
+                    install_snapshot = None
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "rolled_back": True,
+                        "note": "安装失败，已回滚到安装前的版本",
+                    }
+
                 return {"success": False, "error": str(e)}
+
+    # ── 安装原子性：快照与回滚 ─────────────────────────────────────
+    #
+    # HACS 的安装流程是「先删除已安装目录，再下载新版本」。
+    # 一旦下载环节抛异常，目录会停留在已删除状态 —— 集成凭空消失，
+    # 但 config_entry / 实体仍在注册表中，HA 持续报 not found。
+    # 这里在安装前做快照，失败时回滚，避免上述中间态。
+    _SNAPSHOT_SUFFIX = ".hacs_vision_bak"
+
+    async def _snapshot_local_path(self, repo) -> str | None:
+        """把当前安装目录快照到同级备份目录，返回快照路径。"""
+        import shutil, time
+        local = getattr(getattr(repo, "content", None), "path", None)
+        local = getattr(local, "local", None)
+        if not local:
+            return None
+        try:
+            exists = await self.hass.async_add_executor_job(os.path.exists, local)
+            if not exists:
+                return None
+            snap = f"{local}{self._SNAPSHOT_SUFFIX}_{int(time.time())}"
+            await self.hass.async_add_executor_job(shutil.copytree, local, snap)
+            _LOGGER.info("Snapshot created for rollback: %s", snap)
+            return snap
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.warning("Failed to create install snapshot for %s: %s", local, e)
+            return None
+
+    async def _drop_snapshot(self, snap: str | None) -> None:
+        """安装成功后丢弃快照。"""
+        import shutil
+        if not snap:
+            return
+        try:
+            await self.hass.async_add_executor_job(shutil.rmtree, snap)
+            _LOGGER.debug("Snapshot removed after successful install: %s", snap)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug("Failed to remove snapshot %s: %s", snap, e)
+
+    async def _restore_snapshot(self, repo, snap: str | None) -> None:
+        """安装失败后从快照回滚，恢复原安装目录。"""
+        import shutil
+        if not snap:
+            return
+        local = getattr(getattr(repo, "content", None), "path", None)
+        local = getattr(local, "local", None)
+        if not local:
+            return
+        try:
+            exists = await self.hass.async_add_executor_job(os.path.exists, snap)
+            if not exists:
+                return
+            # 目标可能残留半成品，先清掉
+            if await self.hass.async_add_executor_job(os.path.exists, local):
+                await self.hass.async_add_executor_job(shutil.rmtree, local)
+            await self.hass.async_add_executor_job(shutil.copytree, snap, local)
+            await self.hass.async_add_executor_job(shutil.rmtree, snap)
+            _LOGGER.warning(
+                "Install failed; restored previous version from snapshot: %s", local
+            )
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.error(
+                "Failed to restore snapshot %s -> %s: %s. Manual recovery may be needed.",
+                snap, local, e,
+            )
 
     def _is_release_version(self, repo, version: str) -> bool:
         """判断 `version` 是否为该仓库已知的发布标签。"""
@@ -1015,6 +1124,15 @@ class HACSOperator:
                     else:
                         _LOGGER.warning("HACS register failed after add: %s", e, exc_info=True)
                         return {"success": False, "error": f"HACS register failed: {e}"}
+
+            # 验证注册确实生效，而非仅“未抛异常”——HACS 内部 register()
+            # 在 repo.data.id == "0" 等情况下会静默跳过，导致后续操作找不到仓库。
+            if not self._hacs.repositories.is_registered(repository_full_name=full_name.lower()):
+                _LOGGER.warning(
+                    "HACS register did not take effect for %s (repo not present in memory)",
+                    full_name,
+                )
+                return {"success": False, "error": "HACS register did not take effect"}
 
             # 立即将新注册的仓库持久化到 .storage/hacs.repositories。
             try:

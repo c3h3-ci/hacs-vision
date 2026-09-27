@@ -673,7 +673,7 @@ const T = {
   noInstallableStarred: { zh: '{n} 个星标仓库中没有可安装的（无 HACS 分类或已存在）', en: 'None of the {n} starred repos are installable (no HACS category, or already present)', de: 'Keine der {n} Stern-Repositorys ist installierbar' , ru: 'Ни один из {n} репозиториев не устанавливается'},
   hiddenNonInstallable: { zh: '已隐藏 {n} 个不可安装或已存在的仓库', en: '{n} non-installable or already-present repos hidden', de: '{n} nicht installierbare oder vorhandene ausgeblendet', ru: 'Скрыто {n}: неустанавливаемые или существующие'},
   syncSkipped: { zh: '· 跳过 {n} 个', en: '· {n} skipped', de: '· {n} übersprungen', ru: '· пропущено {n}'},
-  gitHubOrgInput: { zh: 'GitHub 组织名或 URL（如 C3H3-AI 或 https://github.com/C3H3-AI）', en: 'GitHub org name or URL (e.g. C3H3-AI or https://github.com/C3H3-AI)', de: 'GitHub-Organisation oder URL (z.B. C3H3-AI oder https://github.com/C3H3-AI)' },
+  gitHubOrgInput: { zh: 'GitHub 组织名或 URL（如 c3h3-ci 或 https://github.com/c3h3-ci）', en: 'GitHub org name or URL (e.g. c3h3-ci or https://github.com/c3h3-ci)', de: 'GitHub-Organisation oder URL (z.B. c3h3-ci oder https://github.com/c3h3-ci)' },
   noSelectedRepos: { zh: '没有选中的仓库', en: 'No repos selected', de: 'Keine Repositorys ausgewählt' },
   syncResultSuccess: { zh: '✓ {n} 个同步成功', en: '✓ {n} synced', de: '✓ {n} synchronisiert' },
   syncResultPartial: { zh: '已完成: {ok} 成功, {fail} 失败', en: 'Done: {ok} succeeded, {fail} failed', de: 'Abgeschlossen: {ok} erfolgreich, {fail} fehlgeschlagen' },

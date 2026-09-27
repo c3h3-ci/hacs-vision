@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 DOMAIN = "hacs_vision"
 DOMAIN_HACS = "hacs"
 URL_PATH = "hacs-vision"
-VERSION = "6.8.0"
+VERSION = "7.0.2"
 
 PANEL_TITLE = "HACS Vision"
 PANEL_ICON = "hacs:hacs"
@@ -52,4 +52,4 @@ HA_LOCALHOST_FALLBACK = "http://localhost:8123"
 VALID_HACS_CATEGORIES = {"integration", "plugin", "python_script", "theme", "appdaemon", "netdaemon", "template"}
 
 # ── 默认仓库 ──
-AUTO_STAR_REPO = "C3H3-AI/hacs-vision"
+AUTO_STAR_REPO = "c3h3-ci/hacs-vision"

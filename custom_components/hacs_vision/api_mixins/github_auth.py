@@ -12,6 +12,22 @@ from ..response import _ok, _not_found, _bad_request, _unauthorized, _server_err
 
 _LOGGER = logging.getLogger(__name__)
 
+# OAuth 设备流 client_id 回退值：默认复用 HACS 的 OAuth 应用（共享其 client_id）。
+# 若 HACS 未安装，可在此填入自有 GitHub OAuth App 的 client_id 以解除对 HACS 内部常量的硬耦合。
+GITHUB_OAUTH_CLIENT_ID_FALLBACK = ""
+
+def _resolve_hacs_client_id() -> str:
+    """解析 GitHub OAuth client_id。
+
+    优先复用 HACS 已注册 OAuth 应用的 client_id；HACS 未安装时回退到本地常量。
+    两者皆缺时返回空串，由调用方转译为明确错误，而非抛 ImportError 致流程崩溃。
+    """
+    try:
+        from custom_components.hacs.const import CLIENT_ID as _hacs_client_id
+        return _hacs_client_id
+    except ImportError:
+        return GITHUB_OAUTH_CLIENT_ID_FALLBACK
+
 class GitHubAuthMixin:
     """GitHub 认证操作——令牌管理与 OAuth 设备流。"""
 
@@ -143,12 +159,18 @@ class GitHubAuthMixin:
             return _server_error()
 
     async def _github_oauth_start(self, body: dict) -> web.Response:
-        """用裸 aiohttp 发起 GitHub OAuth 设备流以绕开 SSRF 防护。"""
+        """发起 GitHub OAuth 设备流。
+
+        用裸 aiohttp 会话而非 HA 共享会话：目标是 github.com 外部端点，
+        且不需要 HA 的 SSRF 重定向中间件。
+        """
         try:
-            from custom_components.hacs.const import CLIENT_ID
+            client_id = _resolve_hacs_client_id()
+            if not client_id:
+                return _bad_request("hacs_required_for_oauth")
 
             register_url = "https://github.com/login/device/code"
-            payload = {"client_id": CLIENT_ID, "scope": "repo"}
+            payload = {"client_id": client_id, "scope": "repo"}
             headers = {"Accept": "application/json"}
 
             connector = aiohttp.TCPConnector(force_close=True)
@@ -175,16 +197,18 @@ class GitHubAuthMixin:
             return _server_error()
 
     async def _github_oauth_poll(self, body: dict) -> web.Response:
-        """用裸 aiohttp 轮询 OAuth 设备流激活。"""
+        """轮询 OAuth 设备流激活。"""
         device_code = body.get("device_code", "")
         if not device_code:
             return _bad_request("device_code_required")
         try:
-            from custom_components.hacs.const import CLIENT_ID
+            client_id = _resolve_hacs_client_id()
+            if not client_id:
+                return _bad_request("hacs_required_for_oauth")
 
             poll_url = "https://github.com/login/oauth/access_token"
             payload = {
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
                 "device_code": device_code,
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -13,18 +14,51 @@ from .runtime import VisionRuntime
 
 _LOGGER = logging.getLogger(__name__)
 
-def register_services(hass: HomeAssistant, runtime: VisionRuntime) -> None:
+def _get_runtime(hass: HomeAssistant) -> VisionRuntime | None:
+    """按配置项取运行时容器（本集成单实例，取首个已加载项）。"""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        rt = entry.runtime_data
+        if rt is not None:
+            return rt
+    return None
+
+async def _create_service_token(hass: HomeAssistant) -> str | None:
+    """为 replace_entity_refs 服务签发一个短期 HA 访问令牌。
+
+    访问令牌不能直接签发，必须先从 refresh token 派生：
+      1. async_create_refresh_token(user, ...)  → models.RefreshToken
+      2. async_create_access_token(refresh_token) → JWT 字符串（同步 @callback）
+    早期实现把 user 直接传给 async_create_access_token 并附加不存在的
+    client_name / expires 关键字参数，导致 TypeError、令牌恒为 None，
+    写回静默失败（仅预览可用）。
+    """
+    try:
+        owner = await hass.auth.async_get_owner()
+        if owner is None:
+            _LOGGER.warning("replace_entity_refs: 无 owner 用户，无法签发访问令牌")
+            return None
+        refresh_token = await hass.auth.async_create_refresh_token(
+            owner,
+            client_id=DOMAIN,
+            client_name="hacs_vision",
+            access_token_expiration=timedelta(minutes=5),
+        )
+        return hass.auth.async_create_access_token(refresh_token)
+    except Exception as err:
+        _LOGGER.warning("replace_entity_refs: 签发访问令牌失败: %s", err)
+        return None
+
+def register_services(hass: HomeAssistant) -> None:
     """为 HACS Vision 注册全部 HA 服务。"""
-    operator = runtime.operator
-    auto_update = runtime.auto_update
 
     async def handle_refresh(call: ServiceCall) -> None:
         """处理刷新服务调用。"""
-        if not operator.available:
+        runtime = _get_runtime(hass)
+        if runtime is None or not runtime.operator.available:
             _LOGGER.warning("Refresh service called but HACS is not available")
             return
         try:
-            result = await operator.refresh_repositories()
+            result = await runtime.operator.refresh_repositories()
             updated = result.get("updated", 0)
             errors = result.get("errors", [])
             rate_limited = result.get("rate_limited", False)
@@ -47,9 +81,10 @@ def register_services(hass: HomeAssistant, runtime: VisionRuntime) -> None:
         if not repo:
             _LOGGER.error("install_repository: 'repository' is required")
             return
-        if operator.available:
+        runtime = _get_runtime(hass)
+        if runtime is not None and runtime.operator.available:
             try:
-                result = await operator.install_repository(repo, category)
+                result = await runtime.operator.install_repository(repo, category)
                 if not result.get("success"):
                     _LOGGER.error("Install service failed: %s", result.get("error", "unknown"))
             except Exception as e:
@@ -98,7 +133,12 @@ def register_services(hass: HomeAssistant, runtime: VisionRuntime) -> None:
             _LOGGER.error("replace_entity_refs: 'old_id' and 'new_id' are required")
             return
         try:
-            finder = EntityRefFinder(hass)
+            token = await _create_service_token(hass)
+            if not token:
+                _LOGGER.warning(
+                    "replace_entity_refs: 未能获取访问令牌，配置写回将失败（仅预览可用）"
+                )
+            finder = EntityRefFinder(hass, hass_token=token)
             result = await finder.replace(old_id, new_id, preview=preview)
             if not preview and result.get("total_updated", 0) > 0:
                 reload_result = await finder.reload_affected()
@@ -140,23 +180,27 @@ def register_services(hass: HomeAssistant, runtime: VisionRuntime) -> None:
     # ── 自动更新服务 ──
     async def handle_auto_update_start(call: ServiceCall) -> None:
         """启动周期性自动更新调度。"""
-        if auto_update:
-            await auto_update.start()
+        runtime = _get_runtime(hass)
+        if runtime is not None and runtime.auto_update:
+            await runtime.auto_update.start()
 
     async def handle_auto_update_stop(call: ServiceCall) -> None:
         """停止周期性自动更新调度。"""
-        if auto_update:
-            auto_update.stop()
+        runtime = _get_runtime(hass)
+        if runtime is not None and runtime.auto_update:
+            runtime.auto_update.stop()
 
     async def handle_auto_update_trigger(call: ServiceCall) -> None:
         """触发一次性自动更新周期。"""
-        if auto_update:
-            await auto_update.trigger()
+        runtime = _get_runtime(hass)
+        if runtime is not None and runtime.auto_update:
+            await runtime.auto_update.trigger()
 
     async def handle_auto_update_reload_settings(call: ServiceCall) -> None:
         """重新加载自动更新设置并重新调度。"""
-        if auto_update:
-            await auto_update.reload_settings()
+        runtime = _get_runtime(hass)
+        if runtime is not None and runtime.auto_update:
+            await runtime.auto_update.reload_settings()
 
     hass.services.async_register(DOMAIN, "refresh", handle_refresh)
     hass.services.async_register(

@@ -4,23 +4,33 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
+from datetime import datetime, timezone
 
 import aiohttp
 from aiohttp import web
 
-from ..entity_ref_finder import EntityRefFinder
-from ..response import _error, _not_found, _bad_request, _unauthorized, _rate_limited, _server_error, _upstream_error
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from datetime import datetime, timezone
 from homeassistant.components.frontend import (
-async_remove_panel,
-async_register_built_in_panel,
+    async_register_built_in_panel,
+    async_remove_panel,
 )
-from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers import area_registry as ar
-import re
-import os
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from ..entity_ref_finder import EntityRefFinder
+from ..response import (
+    _bad_request,
+    _error,
+    _not_found,
+    _rate_limited,
+    _server_error,
+    _unauthorized,
+    _upstream_error,
+)
 
 def _int_param(val, default: int, lo: int | None = None, hi: int | None = None) -> int:
     """安全地将查询参数转换为带边界的整数。"""
@@ -345,7 +355,7 @@ class HACSOpsMixin:
         else:
             repos.sort(key=lambda r: r.get("stargazers_count", 0) or 0, reverse=True)
 
-        HACS_VISION_REPO = "C3H3-AI/hacs-vision"
+        HACS_VISION_REPO = "c3h3-ci/hacs-vision"
         for i, r in enumerate(repos):
             if r.get("full_name", "").lower() == HACS_VISION_REPO.lower():
                 repo = repos.pop(i)
@@ -882,13 +892,16 @@ class HACSOpsMixin:
             await self.data.update_config(config)
         if self.operator and self.operator.available:
             try:
-                hacs_config = self.operator._hacs.configuration
+                hacs = self.operator._hacs
+                hacs_config = hacs.configuration
                 if hasattr(hacs_config, 'archived_repositories'):
                     hacs_archived = list(hacs_config.archived_repositories or [])
                     if repo_name in hacs_archived:
                         hacs_archived.remove(repo_name)
                         hacs_config.archived_repositories = hacs_archived
-                await self.operator._hacs.data.async_write()
+                # 显式探测 data.async_write 存在性，避免 HACS 版本差异导致 AttributeError
+                if getattr(hacs, "data", None) is not None and hasattr(hacs.data, "async_write"):
+                    await hacs.data.async_write()
             except Exception as e:
                 _LOGGER.warning("Failed to update HACS memory state: %s", e, exc_info=True)
         purged_ids = await self._purge_from_repos_storage(repo_name)
@@ -1028,9 +1041,7 @@ class HACSOpsMixin:
                 if entity_entry.config_entry_id == entry_id:
                     seen_entity_ids.add(entity_entry.entity_id)
 
-            for device in device_reg.devices.values():
-                if entry_id not in device.config_entries:
-                    continue
+            for device in dr.async_entries_for_config_entry(device_reg, entry_id):
                 entities = [_entity_to_dict(e) for e in device_entities.get(device.id, [])]
                 entities.sort(key=lambda e: (e["disabled"], e["entity_id"]))
 
@@ -1094,43 +1105,39 @@ class HACSOpsMixin:
         try:
             dev_reg = dr.async_get(self.hass)
             ent_reg = er.async_get(self.hass)
-            if domain:
-                safe = domain
-                device_ids = set()
-                entity_count = 0
-                for entry in self.hass.config_entries.async_entries():
-                    if entry.domain != safe:
+            # 启用中的实体数按设备预统计
+            entities_by_device: dict[str, int] = {}
+            for entity_entry in ent_reg.entities.values():
+                did = entity_entry.device_id
+                if did and not entity_entry.disabled_by:
+                    entities_by_device[did] = entities_by_device.get(did, 0) + 1
+
+            counts: dict[str, dict] = {}
+            for entry in self.hass.config_entries.async_entries():
+                if domain is not None and entry.domain != domain:
+                    continue
+                bucket = counts.setdefault(
+                    entry.domain, {"devices": set(), "entities": 0}
+                )
+                # 按配置项取设备——device_registry.devices 与
+                # DeviceEntry.config_entries 自 2026.9 起已弃用
+                for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
+                    if device.id in bucket["devices"]:
                         continue
-                    for device in dev_reg.devices.values():
-                        if entry.entry_id in device.config_entries:
-                            device_ids.add(device.id)
-                            entity_count += len([
-                                e for e in ent_reg.entities.values()
-                                if e.device_id == device.id and not e.disabled_by
-                            ])
+                    bucket["devices"].add(device.id)
+                    bucket["entities"] += entities_by_device.get(device.id, 0)
+
+            if domain is not None:
+                bucket = counts.get(domain)
                 return web.json_response({
-                    "domain": safe, "devices": len(device_ids), "entities": entity_count,
+                    "domain": domain,
+                    "devices": len(bucket["devices"]) if bucket else 0,
+                    "entities": bucket["entities"] if bucket else 0,
                 })
-            else:
-                domain_counts = {}
-                for entry in self.hass.config_entries.async_entries():
-                    d = entry.domain
-                    if d not in domain_counts:
-                        domain_counts[d] = {"devices": set(), "entities": 0}
-                for device in dev_reg.devices.values():
-                    for eid in device.config_entries:
-                        for entry in self.hass.config_entries.async_entries():
-                            if entry.entry_id == eid and entry.domain in domain_counts:
-                                domain_counts[entry.domain]["devices"].add(device.id)
-                                domain_counts[entry.domain]["entities"] += len([
-                                    e for e in ent_reg.entities.values()
-                                    if e.device_id == device.id and not e.disabled_by
-                                ])
-                result = {
-                    d: {"devices": len(c["devices"]), "entities": c["entities"]}
-                    for d, c in domain_counts.items()
-                }
-                return web.json_response(result)
+            return web.json_response({
+                d: {"devices": len(c["devices"]), "entities": c["entities"]}
+                for d, c in counts.items()
+            })
         except Exception as e:
             _LOGGER.error("Failed to get device counts for %s: %s", domain or "all", e, exc_info=True)
             return _server_error()

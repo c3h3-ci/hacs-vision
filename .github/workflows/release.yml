@@ -1,0 +1,133 @@
+name: Auto Release Draft
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'custom_components/**/manifest.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-draft:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 版本号严格比较
+      - name: Version Increment Check
+        id: check
+        run: |
+          MANIFEST_FILE=$(ls custom_components/*/manifest.json | head -n 1)
+          COMPONENT_NAME=$(basename $(dirname $MANIFEST_FILE))
+          NEW_VERSION=$(python3 -c "import json; print(json.load(open('$MANIFEST_FILE'))['version'])")
+
+          LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          OLD_VERSION=${LATEST_TAG#v}
+
+          echo "检测到新版本: $NEW_VERSION"
+          echo "检测到旧版本: $OLD_VERSION"
+
+          python3 -m pip install packaging
+          IS_INCREASED=$(python3 -c "from packaging import version; print(version.parse('$NEW_VERSION') > version.parse('$OLD_VERSION'))")
+
+          if [ "$IS_INCREASED" = "True" ]; then
+            echo "compare_result=success" >> $GITHUB_OUTPUT
+            echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "comp_name=$COMPONENT_NAME" >> $GITHUB_OUTPUT
+
+            COMMIT_TITLE=$(git log -1 --pretty=format:"%s")
+            echo "commit_title=$COMMIT_TITLE" >> $GITHUB_OUTPUT
+
+            if [[ $NEW_VERSION == *"beta"* ]] || [[ $NEW_VERSION == *"rc"* ]] || [[ $NEW_VERSION == *"alpha"* ]]; then
+              echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            else
+              echo "is_prerelease=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "compare_result=skip" >> $GITHUB_OUTPUT
+            echo "❌ 错误：新版本 $NEW_VERSION 并不大于旧版本 $OLD_VERSION。跳过发布。"
+          fi
+
+      # 构建 ZIP
+      - name: Create ZIP file
+        if: steps.check.outputs.compare_result == 'success'
+        run: |
+          cd custom_components/${{ steps.check.outputs.comp_name }}
+          zip -r ../../${{ steps.check.outputs.comp_name }}.zip .
+
+      # 显式创建 tag。
+      #
+      # GitHub 对【草稿】Release 一律不创建 tag，只分配 untagged-<hash> 占位
+      # URL（发布后才绑定）。这与会话所用工具无关，实测两种工具结果相同：
+      #   action-gh-release --draft → untagged-99cc4dc778e5fa07fa8b
+      #   gh release create   --draft → untagged-725088790d40bf4dbb4e
+      # tag 不存在的后果：发布该 release 后依然没有 tag，而 HACS 依赖 tag 识别
+      # 版本，用户收不到更新（v7.0.0 实测）。因此必须在创建 release 之前先把
+      # tag 建好。
+      - name: Create and push tag
+        if: steps.check.outputs.compare_result == 'success'
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.check.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "✅ Created tag $TAG"
+          fi
+
+      # 创建 Release Draft
+      #
+      # 注意：草稿阶段的 html_url 会是 untagged-<hash> —— 这是 GitHub 对草稿的
+      # 正常显示行为，并不代表 tag 缺失（tag 已由上一步创建）。判断 tag 是否
+      # 存在必须查 git ls-remote，不能看 URL。
+      - name: Create draft release
+        if: steps.check.outputs.compare_result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.check.outputs.version }}
+          COMP_NAME: ${{ steps.check.outputs.comp_name }}
+          COMMIT_TITLE: ${{ steps.check.outputs.commit_title }}
+          IS_PRERELEASE: ${{ steps.check.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${VERSION}"
+
+          PRERELEASE_FLAG=""
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --draft \
+            --target "${{ github.sha }}" \
+            --title "${TAG} - ${COMMIT_TITLE}" \
+            --generate-notes \
+            ${PRERELEASE_FLAG} \
+            "${COMP_NAME}.zip"
+
+          echo "✅ Draft release created for ${TAG}"
+
+      # 校验 tag 确实存在。
+      # 把「静默失败」变成「显式失败」——否则要等到用户反馈收不到更新才会发现。
+      - name: Verify tag exists
+        if: steps.check.outputs.compare_result == 'success'
+        run: |
+          TAG="v${{ steps.check.outputs.version }}"
+          if ! git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "::error::Tag ${TAG} was not created — the release will not reach HACS"
+            exit 1
+          fi
+          echo "✅ Tag ${TAG} exists"

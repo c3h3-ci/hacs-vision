@@ -5,19 +5,28 @@ import json
 import logging
 import os
 
-import voluptuous as vol
 from aiohttp import ClientTimeout
 
 from homeassistant.components import panel_custom
-from homeassistant.components.frontend import add_extra_js_url, async_remove_panel
+from homeassistant.components.frontend import (
+    add_extra_js_url,
+    async_remove_panel,
+    remove_extra_js_url,
+)
 from homeassistant.components.websocket_api import (
     ActiveConnection,
     async_register_command,
     async_response,
     websocket_command,
 )
+from homeassistant.config_entries import (
+    SIGNAL_CONFIG_ENTRY_CHANGED,
+    ConfigEntry,
+    ConfigEntryChange,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers import aiohttp_client, config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.typing import ConfigType
 
 from .api import HACSEnhancedAPI, HACSEnhancedStaticView, HACSBrandIconView
@@ -34,6 +43,7 @@ FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 BUILD_JSON_PATH = os.path.join(FRONTEND_DIR, "build.json")
 
 _LOGGER = logging.getLogger(__name__)
+_REGISTERED_VIEWS: set = set()
 
 def _read_file(path: str) -> str:
     """同步读取文件——须经 executor 调用。"""
@@ -48,9 +58,11 @@ async def _read_build_hash(hass: HomeAssistant) -> str:
     except (OSError, ValueError):
         return VERSION
 
-CONFIG_SCHEMA = vol.Schema({DOMAIN: vol.Schema({})}, extra=vol.ALLOW_EXTRA)
+CONFIG_SCHEMA = cv.removed(DOMAIN, raise_if_present=True)
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """集成入口：注册服务（早于配置项，便于自动化编辑/校验）。"""
+    register_services(hass)
     return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: VisionConfigEntry) -> bool:
@@ -61,10 +73,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: VisionConfigEntry) -> bo
     backup = BackupManager(hass, shared_data=shared_data, operator=operator)
     checker = DependencyChecker(hass, shared_data=shared_data)
 
-    hass.http.register_view(HACSEnhancedStaticView(hass))
+    # 幂等注册：重加载时跳过已注册的视图，避免 aiohttp 重复路由抛出 ValueError
+    if HACSEnhancedStaticView not in _REGISTERED_VIEWS:
+        hass.http.register_view(HACSEnhancedStaticView(hass))
+        _REGISTERED_VIEWS.add(HACSEnhancedStaticView)
     api_view = HACSEnhancedAPI(hass, data=shared_data, operator=operator, backup=backup, checker=checker)
-    hass.http.register_view(api_view)
-    hass.http.register_view(HACSBrandIconView(hass))
+    if HACSEnhancedAPI not in _REGISTERED_VIEWS:
+        hass.http.register_view(api_view)
+        _REGISTERED_VIEWS.add(HACSEnhancedAPI)
+    if HACSBrandIconView not in _REGISTERED_VIEWS:
+        hass.http.register_view(HACSBrandIconView(hass))
+        _REGISTERED_VIEWS.add(HACSBrandIconView)
     cache_key = await _read_build_hash(hass)
     await _register_panel(hass, cache_key)
 
@@ -99,23 +118,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: VisionConfigEntry) -> bo
     runtime.auto_update = auto_update
     await auto_update.start()
 
-    # 注册服务
-    register_services(hass, runtime)
-
     # 预热配置项缓存，变更时实时重建
     try:
         await shared_data.get_config_entries_map()
 
-        async def _rebuild_cache(event):
-            """任何变更时立即重建配置项缓存。"""
+        async def _rebuild_cache(
+            change: ConfigEntryChange, entry: ConfigEntry
+        ) -> None:
+            """任何配置项变更时立即重建缓存。"""
             try:
                 await shared_data.get_config_entries_map(force_refresh=True)
             except Exception as exc:
                 _LOGGER.warning("Config cache rebuild error: %s", exc)
 
-        unsub1 = hass.bus.async_listen("config_entry_updated", _rebuild_cache)
-        unsub2 = hass.bus.async_listen("config_entry_removed", _rebuild_cache)
-        runtime.listeners = [unsub1, unsub2]
+        unsub = async_dispatcher_connect(
+            hass, SIGNAL_CONFIG_ENTRY_CHANGED, _rebuild_cache
+        )
+        runtime.listeners = [unsub]
     except Exception as exc:
         _LOGGER.warning("Config entries cache init error: %s", exc)
 
@@ -181,6 +200,11 @@ def _register_sidebar_badge(hass: HomeAssistant, cache_key: str) -> None:
 
     static_url = f"/api/hacs_vision/static/sidebar-badge.js?v={cache_key}"
 
+    # 重加载时先移除旧的同 URL 资源，避免同一角标 JS 被重复注入执行两遍
+    try:
+        remove_extra_js_url(hass, static_url)
+    except Exception:
+        pass
     try:
         add_extra_js_url(hass, static_url)
         _LOGGER.info("Sidebar badge registered via frontend.add_extra_js_url")

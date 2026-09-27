@@ -1,18 +1,18 @@
 # HACS Vision
 
-[![HACS Validation](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/C3H3-AI/hacs-vision/actions/workflows/hacs-validate.yml)
+[![HACS Validation](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml/badge.svg)](https://github.com/c3h3-ci/hacs-vision/actions/workflows/hacs-validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Downloads](https://img.shields.io/github/downloads/C3H3-AI/hacs-vision/total)](https://github.com/C3H3-AI/hacs-vision/releases)
-[![Stars](https://img.shields.io/github/stars/C3H3-AI/hacs-vision)](https://github.com/C3H3-AI/hacs-vision/stargazers)
-[![License](https://img.shields.io/github/license/C3H3-AI/hacs-vision)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Downloads](https://img.shields.io/github/downloads/c3h3-ci/hacs-vision/total)](https://github.com/c3h3-ci/hacs-vision/releases)
+[![Stars](https://img.shields.io/github/stars/c3h3-ci/hacs-vision)](https://github.com/c3h3-ci/hacs-vision/stargazers)
+[![License](https://img.shields.io/github/license/c3h3-ci/hacs-vision)](LICENSE)
 
 [![中文](https://img.shields.io/badge/lang-zh--CN-blue.svg)](#)
 [![English](https://img.shields.io/badge/lang-en-red.svg)](README.en.md)
 [![Deutsch](https://img.shields.io/badge/lang-de-green.svg)](README.de.md)
 [![Русский](https://img.shields.io/badge/lang-ru-blue.svg)](README.ru.md)
 
-> **当前版本**: v6.8.0 | **最低 HA 版本**: 2026.1.0
+> **当前版本**: v7.0.1 | **最低 HA 版本**: 2026.1.0
 
 > **⚠️ 前置条件**: 必须先安装并配置好 [HACS](https://hacs.xyz)
 
@@ -57,11 +57,11 @@
 
 | 商店 | 详情 | 配置流 |
 |:----:|:----:|:------:|
-| ![store](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/store.png) | ![detail](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/config-flow.png) |
+| ![store](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/store.png) | ![detail](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/detail.png) | ![config-flow](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/config-flow.png) |
 | **仓库管理** | **更新** | **设置** |
-| ![management](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/management.png) | ![updates](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/updates.png) | ![settings](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/settings.png) |
+| ![management](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/management.png) | ![updates](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/updates.png) | ![settings](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/settings.png) |
 | **集成管理** | **集成配置** | |
-| ![integrations](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integrations.png) | ![integration-config](https://raw.githubusercontent.com/C3H3-AI/hacs-vision/main/assets/integration-config.png) | |
+| ![integrations](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integrations.png) | ![integration-config](https://raw.githubusercontent.com/c3h3-ci/hacs-vision/main/assets/integration-config.png) | |
 
 ---
 
@@ -73,14 +73,14 @@
 
 1. 确保已安装 [HACS](https://hacs.xyz)
 2. 进入 **HACS → 集成 → 右上角菜单 → 自定义仓库**
-3. 添加仓库 URL：`https://github.com/C3H3-AI/hacs-vision`
+3. 添加仓库 URL：`https://github.com/c3h3-ci/hacs-vision`
 4. 类别：**集成**
 5. 点击 **安装**
 6. **重启 Home Assistant**
 
 ### 手动安装
 
-1. 下载最新 [Release](https://github.com/C3H3-AI/hacs-vision/releases)
+1. 下载最新 [Release](https://github.com/c3h3-ci/hacs-vision/releases)
 2. 将 `custom_components/hacs_vision` 目录复制到 HA 的 `custom_components/` 目录
 3. 重启 Home Assistant
 
@@ -442,8 +442,8 @@ A: 通过 HACS 安装的会在更新页显示。手动安装的请下载最新 R
 
 ## 支持
 
-- [提交 Issue](https://github.com/C3H3-AI/hacs-vision/issues)
-- [讨论区](https://github.com/C3H3-AI/hacs-vision/discussions)
+- [提交 Issue](https://github.com/c3h3-ci/hacs-vision/issues)
+- [讨论区](https://github.com/c3h3-ci/hacs-vision/discussions)
 
 
 ## 💝 赞助
@@ -461,5 +461,5 @@ MIT License — 详见 [LICENSE](LICENSE)
 ---
 
 <p align="center">
-  Made with ❤️ by <a href="https://github.com/C3H3-AI">C3H3-AI</a>
+  Made with ❤️ by <a href="https://github.com/c3h3-ci">c3h3-ci</a>
 </p>
