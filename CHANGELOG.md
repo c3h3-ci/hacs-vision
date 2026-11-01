@@ -1,3 +1,35 @@
+## 7.1.0 — 适配 Home Assistant 2026.11 内置 Marketplace
+
+HA 2026.11 起核心自带 `marketplace` 集成，启动时删除 `custom_components/hacs`
+并接管 `.storage/hacs.*`。本版让 hacs_vision 在两代后端下都能工作。
+
+### 新增
+- `backend.py`：后端抽象层。`MarketplaceBackend` 把 marketplace 的 Repository
+  包装成 HACS Repository 的形状，`LegacyHacsBackend` 原样透传旧 HACS。
+- `resolve_storage_path()`：按当前后端解析存储文件名（`hacs.repositories` →
+  `marketplace.repositories`，`hacs.hacs` → `marketplace.common`）。
+
+### 修复（均来自 marketplace 后端实测）
+- 适配器不再用 `__slots__`：operator 按分支/SHA 安装时会给 repo 打补丁
+  （`repo.download_content = …`），`__slots__` 会让赋值抛 AttributeError。
+  改为 `__getattr__`/`__setattr__` 代理，写入落到最底层对象。
+- `repo.data.name` 在 marketplace 是只读派生属性，直接赋值会抛错，改为容错跳过。
+- marketplace 的 `uninstall()` 只删目录、只改内存，不像 `async_install_repository()`
+  那样自己落盘。卸载后补一次 `_persist_repo_state()`，否则重启前状态不一致。
+- `has_update` 增加 `installed` 前置条件。marketplace 会给已卸载的仓库保留
+  `version_installed`（上次装的版本），只比版本差会把 54 个未安装仓库算成可更新。
+- `system_log.DATA_SYSTEM_LOG` 在 2026.11 被移除，改为兼容导入。
+- `manifest.json`：`dependencies` 去掉 `hacs`（新版本没这个集成会拒绝加载），
+  改列进 `after_dependencies`，同时加入 `marketplace`。
+
+### 验证
+HA 2026.11.0b2 + marketplace 后端实测：
+- 主题安装 → 目录落盘 → 记录更新 → API 可见 ✓
+- 主题卸载 → 目录删除 → 状态立即落盘（8→7）✓
+- 集成安装（adaptive-lighting v1.32.0）→ `custom_components/adaptive_lighting/`
+  完整生成 → 卸载清理干净 ✓
+- 5375 个仓库列表、分类/状态筛选、分页、统计全部正常 ✓
+
 # Changelog
 
 ## v7.0.2 (2026-09-26) — 安装原子性：失败自动回滚 / Install Atomicity: Rollback on Failure
